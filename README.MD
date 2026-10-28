@@ -9,6 +9,12 @@ built and debugged.
 > **Metal (bgfx) 渲染后端**。目标是在 macOS 上完全用 Metal 渲染（不再有 GL context），
 > 并保持原版 OpenGL 路径的兼容性。
 
+> **声明 / AI Disclosure**
+> 本仓库中的 Metal (bgfx) 渲染后端移植、全部配套脚本、调试过程与文档修改，均由 **DeepSeek-V4.1-Flash** 生成。
+> 上游 Codename Engine 代码、Lime/OpenFL/HaxeFlixel 生态及 bgfx 等第三方依赖的版权归各自作者所有，
+> 遵循其原有许可证（见本文末尾 Credits & License）。
+
+
 ---
 
 ## 1. 特性概览
