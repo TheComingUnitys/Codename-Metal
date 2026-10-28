@@ -1,0 +1,26 @@
+# ---- local-only / heavy artifacts (not part of the repo) ----
+_local/
+downloads/
+app-backup-*/
+*.log
+*.tmp
+
+# bgfx is an external dependency (see README §5.4); the build script creates these
+bgfx-master/
+bx
+bimg
+
+# ---- build outputs ----
+CodenameEngine-1.0.1/export/
+CodenameEngine-1.0.1/dump/
+CodenameEngine-1.0.1/metal/generated/
+CodenameEngine-1.0.1/export/release/
+CodenameEngine-1.0.1/.haxelib/
+CodenameEngine-1.0.1/.vscode/*.log
+
+# ---- OS junk ----
+.DS_Store
+**/.DS_Store
+# FLA/animate source art (152 MB) - not needed to build or run the game
+CodenameEngine-1.0.1/art/flashFiles/
+
