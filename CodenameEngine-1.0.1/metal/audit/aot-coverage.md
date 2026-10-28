@@ -22,7 +22,7 @@ Sources enumerated from:
 | unique source keys | 116 |
 | vertex / fragment | 16 / 100 |
 | cache fingerprint | `09A6E598A7C07002` |
-| total MSL bytes | 537834 |
+| total MSL bytes | 537839 |
 | **AOT .metallib stages** | **112 / 116** |
 | **AOT .metallib bytes** | **972780** |
 | .metallib build environment | `Apple M3|apple7+|Version 26.6.2 (Build 25G83)` |
@@ -121,7 +121,7 @@ Sources enumerated from:
 | 88 | `mod:mods/dustin-mod-master/shaders/lab_dust/fragment` | fragment | `97EFFCFFC95F4E37` | `5E8EB8CFE45FE731` | 8345 | 14968 | 19 | 0 | 1 |
 | 89 | `mod:mods/dustin-mod-master/shaders/light/fragment` | fragment | `37CA8F91FFD48461` | `0C599CB6F94D21A0` | 8264 | 14584 | 18 | 0 | 1 |
 | 90 | `mod:mods/dustin-mod-master/shaders/light_preprocess/fragment` | fragment | `D8B3A966AC271A80` | `2714A0B48BB6D3D8` | 6130 | 10036 | 9 | 0 | 1 |
-| 91 | `mod:mods/dustin-mod-master/shaders/line/fragment` | fragment | `B3064EBB937D8A8F` | `F127B520C55AF82C` | 4241 | - | 6 | 0 | 1 |
+| 91 | `mod:mods/dustin-mod-master/shaders/line/fragment` | fragment | `B3064EBB937D8A8F` | `F127B520C55AF82C` | 4246 | - | 6 | 0 | 1 |
 | 92 | `mod:mods/dustin-mod-master/shaders/papyruseye/fragment` | fragment | `1A132EB021652D46` | `C74F9D9E54242EC6` | 4380 | 8196 | 6 | 0 | 1 |
 | 93 | `mod:mods/dustin-mod-master/shaders/papyruseye/vertex` | vertex | `25DC6114345C084C` | `06AC65EEA9CB0CE8` | 2190 | 7696 | 6 | 8 | 0 |
 | 94 | `mod:mods/dustin-mod-master/shaders/pixel/fragment` | fragment | `EAB86C3874BCD92E` | `2E1790653920FC8D` | 4490 | 7796 | 7 | 0 | 1 |

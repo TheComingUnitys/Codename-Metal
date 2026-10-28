@@ -437,6 +437,17 @@ class GLSLToMSL
 			return;
 		}
 
+		// GLSL also allows an unsized array *before* the name: `uniform float[] a;`
+		// (mod line.frag does exactly this).  The length is only known at upload time.
+		var unsizedArray = false;
+		if (i + 1 < toks.length
+		&&  toks[i].kind == Punct && toks[i].text == '['
+		&&  toks[i + 1].kind == Punct && toks[i + 1].text == ']')
+		{
+			unsizedArray = true;
+			i += 2;
+		}
+
 		while (i < toks.length)
 		{
 			// skip commas
@@ -454,7 +465,7 @@ class GLSLToMSL
 			var name = toks[i].text;
 			i++;
 
-			var arrayLen = 0;
+			var arrayLen = unsizedArray ? -1 : 0;
 			if (i < toks.length && toks[i].kind == Punct && toks[i].text == '[')
 			{
 				i++;
@@ -568,7 +579,9 @@ class GLSLToMSL
 			return;
 		}
 
-		var count = arrayLen > 0 ? arrayLen : 1;
+		// Unsized uniform arrays are packed with a generous fixed element count; the
+		// upload only fills the entries the shader actually provides.
+		var count = arrayLen < 0 ? 256 : (arrayLen > 0 ? arrayLen : 1);
 		var memberType:String;
 		var accessor:String;
 		var bigCount:Int;
@@ -628,12 +641,20 @@ class GLSLToMSL
 			offset: offset,
 			size: size,
 			accessor: accessor,
-			array: arrayLen > 0
+			array: arrayLen != 0
 		};
 		uniforms.push(info);
 
 		var ref = '_mtl_u.' + name;
-		switch (glslType)
+		var scalarArray = arrayLen != 0 && (glslType == 'float' || glslType == 'int' || glslType == 'bool');
+		if (scalarArray)
+		{
+			// Scalar arrays are stored as float4 elements; the accessor has to be applied
+			// *after* the index (rewriteScalarUniformArrayAccess handles that), so the
+			// symbol itself must not carry it.
+			symbols.set(name, ref);
+		}
+		else switch (glslType)
 		{
 			case 'bool':
 				symbols.set(name, '($ref' + accessor + ' != 0.0)');
@@ -1676,6 +1697,7 @@ class GLSLToMSL
 		finalOut = rewriteSwizzleCompoundAssignments(finalOut);
 		finalOut = rewriteArrayVaryingAccess(finalOut);
 		finalOut = rewriteTruncatingConstructors(finalOut);
+		finalOut = rewriteScalarUniformArrayAccess(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1907,6 +1929,60 @@ class GLSLToMSL
 					out = out.substring (0, at) + '(' + name + ').' + swizzleFor (target) + out.substring (at + m.len);
 					search = at + name.length + 3;
 				}
+			}
+		}
+		return out;
+	}
+
+	/**
+		Scalar uniform arrays (`uniform float a[128]`, `uniform float[] a`) are packed as
+		`float4 a[N]` in the uniform struct, so `a[i]` must become `_mtl_u.a[i].x` (and an
+		`int(...)` / bool comparison for the other scalar types).  The generic symbol
+		substitution cannot see the index, hence this final textual pass.
+	**/
+	function rewriteScalarUniformArrayAccess (code:String):String
+	{
+		var out = code;
+		for (u in uniforms)
+		{
+			if (!u.array) continue;
+			var scalar = (u.glslType == 'float' || u.glslType == 'int' || u.glslType == 'bool');
+			if (!scalar) continue;
+
+			var head = '_mtl_u.' + u.name;
+			var search = 0;
+			while (true)
+			{
+				var at = out.indexOf (head + '[', search);
+				if (at < 0) break;
+
+				var depth = 0;
+				var i = at + head.length;
+				var close = -1;
+				while (i < out.length)
+				{
+					var ch = out.charAt (i);
+					if (ch == '[') depth++;
+					else if (ch == ']')
+					{
+						depth--;
+						if (depth == 0) { close = i; break; }
+					}
+					i++;
+				}
+				if (close < 0) break;
+
+				var indexExpr = out.substring (at + head.length + 1, close);
+				var replacement:String;
+				if (u.glslType == 'float')
+					replacement = head + '[' + indexExpr + '].x';
+				else if (u.glslType == 'int')
+					replacement = 'int(' + head + '[' + indexExpr + '].x)';
+				else
+					replacement = '(' + head + '[' + indexExpr + '].x != 0.0)';
+
+				out = out.substring (0, at) + replacement + out.substring (close + 1);
+				search = at + replacement.length;
 			}
 		}
 		return out;

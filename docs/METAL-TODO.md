@@ -52,7 +52,7 @@
 | --- | --- | --- |
 | 1 | `mods/.../cable/fragment` | 依赖 `TWO_PHASE`/`THREE_PHASE` define，未定义时变量缺失（mod 源问题） |
 | 2 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
-| 3 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
+| 3 | `mods/.../line/fragment` | `gl_FragColor = openfl_TextureCoordv`（vec4 = vec2，非法 GLSL 赋值） |
 | 4 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
 
 > 已修复：`wi.fragment`（`_mtl_u` 重复参数）、`vhs.fragment`（swizzle 复合赋值）、
@@ -63,6 +63,8 @@
 > （`base:Vec3` 伪类型、vec4 重载调用参数不匹配），两个 OverlayShader stage 现已可编译。
 > 另修正 `assets/shaders/engine/editorWaveformsRainbow.frag`：`uniform ivec2 waveformSize` → `vec2`
 > （MSL 没有隐式 int→float 转换，且 Haxe 侧上传的本来就是浮点 [w,h]）。
+> 翻译器同时补上**标量/无长度 uniform 数组**支持（`uniform float a[N]`、`uniform float[] a`
+> → `float4 a[N]` 打包 + `_mtl_u.a[i].x` 访问重写）。
 
 **TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这些写法可翻译（每类约 1 处规则），
 目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
