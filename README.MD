@@ -134,6 +134,8 @@ haxelib dev lime ~/haxelib-dev/lime-832
 
 ### 5.4 bgfx（Metal 静态库）
 
+> bgfx 官网/源码仓库：**https://github.com/bkaradzic/bgfx**（本后端构建的静态库即来自该仓库的 Metal renderer）。
+
 ```sh
 # 1) 获取 bgfx 源码到工程同级目录（目录名必须是 bgfx-master）
 git clone --depth 1 https://github.com/bkaradzic/bgfx.git ../bgfx-master
@@ -286,7 +288,7 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 ## 13. Credits & License
 
 - 上游引擎：**Codename Engine** 团队（Apache-2.0）。见 `CodenameEngine-1.0.1/LICENSE` 与上游 README credits。
-- 渲染库：**bgfx** / bx / bimg（BSD-2-Clause，Copyright © Branimir Karadžić）。
+- 渲染库：**[bgfx](https://github.com/bkaradzic/bgfx)** / [bx](https://github.com/bkaradzic/bx) / [bimg](https://github.com/bkaradzic/bimg)（BSD-2-Clause，Copyright © Branimir Karadžić）。
 - Haxe 生态：Lime、OpenFL、HaxeFlixel、flxanimate、hxvlc 等，遵循各自许可证。
 - 本仓库的 Metal 后端代码、脚本与文档：Apache-2.0（与上游工程一致）。
 
