@@ -22,7 +22,7 @@ built and debugged.
 - **Metal 渲染**：所有 2D 渲染经 `lime_gl_*` GL 形状 API 仿真层 → `bgfx` Metal 后端提交；
   进程内没有 GL context，也没有 GL 交换链。
 - **着色器 AOT**：构建期把 GLSL 翻译成 Metal Shading Language 并预编译为 `.metallib`
-  （当前 116 个 stage 中 105 个带预编译库；运行时零 GLSL 翻译）。
+  （当前 116 个 stage 中 108 个带预编译库；运行时零 GLSL 翻译）。
 - **双路径**：Lime 的 `lime_gl_*` CFFI 兼容层 + 更快的原生 `cne_metal_*` 路径（默认启用）。
 - **可诊断**：`CNE_METAL_PROFILE`、`CNE_METAL_DRAWPROBE`、`CNE_METAL_COVERAGE`、
   `CNE_METAL_HITCH` 等 70 个环境变量开关（见 §8）。
@@ -189,7 +189,7 @@ haxelib run lime build mac
 `apply.sh` 会在构建前自动调用 `metal/scripts/gen_shader_aot.py`：
 
 - 枚举 OpenFL/Flixel/CNE/mod 的全部 GLSL → 翻译成 MSL → 编译 `.metallib`；
-- 生成 `metal/haxe/lime/graphics/metal/ShaderAotCache.hx`（约 1.9 MB，含 105 个预编译库）；
+- 生成 `metal/haxe/lime/graphics/metal/ShaderAotCache.hx`（约 2.0 MB，含 108 个预编译库）；
 - 修改翻译器或 shader 后如未生效，删除缓存强制重建：
 
 ```sh
@@ -267,7 +267,7 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 
 - OpenFL 仍使用 GL 形状 API（`lime_gl_*`），后续可做 Metal-native `Context3D`（方案见
   `metal/audit/openfl-native.md`）；
-- 11 个 shader stage 尚未在构建期生成 `.metallib`（其中 4 个 mod shader 需翻译器/上游修复）；
+- 8 个 shader stage 尚未在构建期生成 `.metallib`（其中 4 个 mod shader 需上游修复）；
 - `DisplayObject.mask`（stencil 状态未接线）、`readPixels`（截图/读回）为条件性功能缺口；
 - 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现。
 

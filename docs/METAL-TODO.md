@@ -43,37 +43,35 @@
 | 项 | 数值 | 影响 |
 | --- | --- | --- |
 | 缓存 stage 总数 | 116（16 vertex / 100 fragment） | — |
-| 已预编译 `.metallib` | **105 / 116** | 其余 11 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
-| 构建期 GLSL→MSL 翻译失败 | **11 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
+| 已预编译 `.metallib` | **108 / 116** | 其余 8 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
+| 构建期 GLSL→MSL 翻译失败 | **8 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
 
-### 2.1 构建期翻译失败的 11 个 stage（按错误分类）
+### 2.1 构建期仍失败的 8 个 stage（按错误分类）
 
 | # | shader | 错误摘要 |
 | --- | --- | --- |
-| 1 | `openfl.filters.BlurShader#0/vertex` | 赋值 `float` ← `float2` |
-| 2 | `openfl.filters.BlurAlphaShader#0/vertex` | 同上 |
-| 3 | `openfl.filters.ConvolutionShader#0/vertex` | 同上 |
-| 4 | `openfl.filters.DisplacementMapShader#0/fragment` | `float4` → `float2` 尺寸不匹配 |
-| 5 | `funkin.backend.shaders.OverlayShader#0/fragment` | program scope 变量必须位于 constant 地址空间（全局变量） |
-| 6 | `funkin.backend.shaders.OverlayShader#1/fragment` | 同上 |
-| 7 | `assets/shaders/engine/editorWaveformsRainbow/fragment` | `float2` 与 `int2` 隐式转换 |
-| 8 | `mods/.../cable/fragment` | 函数式强制转换语法 `float(...)` / 类型名解析失败 |
-| 9 | `mods/.../firething/fragment` | 使用了未前置声明的 `noise1` |
-| 10 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
-| 11 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
+| 1 | `openfl.filters.DisplacementMapShader#0/fragment` | `float4` → `float2` 尺寸不匹配 |
+| 2 | `funkin.backend.shaders.OverlayShader#0/fragment` | program scope 变量必须位于 constant 地址空间（全局变量） |
+| 3 | `funkin.backend.shaders.OverlayShader#1/fragment` | 同上 |
+| 4 | `assets/shaders/engine/editorWaveformsRainbow/fragment` | `float2` 与 `int2` 隐式转换 |
+| 5 | `mods/.../cable/fragment` | 函数式强制转换语法 `float(...)` / 类型名解析失败 |
+| 6 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
+| 7 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
+| 8 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
 
-> 已修复（本轮）：`wi.fragment`（`_mtl_u` 重复参数）与 `vhs.fragment`（swizzle 复合赋值）；
-> 另有翻译器增强：顶层 helper 前置声明、重复作用域参数折叠。
+> 已修复：`wi.fragment`（`_mtl_u` 重复参数）、`vhs.fragment`（swizzle 复合赋值）、
+> 3 个 OpenFL filter shader（`varying vec2 vBlurCoords[5]` 的数组 varying 支持）、
+> 以及翻译器增强：顶层 helper 前置声明、重复作用域参数折叠。
 
 **TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这 13 类写法可翻译（每类约 1 处规则），
 目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
 
-### 2.2 `.metallib` 只有 105/116
+### 2.2 `.metallib` 只有 108/116
 
 - 原因：本机只有 Command Line Tools，`metal/tools/CompileShaderAot.mm` 对部分 MSL 无法离线编译（日志 `cannot write .metallib`）；
 - TODO：逐条修 `cannot write .metallib` 的 MSL 生成（多为 `_mtl_u`/地址空间/模板辅助函数命名问题），
   或引入完整 Xcode/离线 `xcrun metal` 流程；验收 = `metallib compiled : 116 / 116`。
-- 影响：11 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
+- 影响：8 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
 
 ### 2.3 运行时翻译兜底仍然默认开启
 

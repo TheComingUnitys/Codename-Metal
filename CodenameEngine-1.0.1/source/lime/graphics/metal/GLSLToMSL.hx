@@ -88,7 +88,8 @@ class GLSLToMSL
 
 	// collected declarations
 	var attributes:Array<AttrInfo> = [];
-	var varyings:Array<{name:String, glslType:String, mslType:String}> = [];
+	var varyings:Array<{name:String, glslType:String, mslType:String, arrayLen:Int}> = [];
+	var varyingNames = new Map<String, Bool> ();
 	var uniforms:Array<UniformInfo> = [];
 	var samplers:Array<SamplerInfo> = [];
 	var uniformSize:Int = 0;
@@ -365,7 +366,11 @@ class GLSLToMSL
 				case 'attribute':
 					addAttribute(name, type);
 				case 'varying':
-					addVarying(name, type);
+					// OpenFL's BitmapFilter shaders declare `varying vec2 vBlurCoords[5];`.
+					// The array length used to be dropped, so the struct member became a
+					// plain float2 and every `vBlurCoords[i] = ...` failed with
+					// "assigning to float from float2".
+					addVarying(name, type, arrayLen);
 				case 'uniform':
 					addUniform(name, type, arrayLen);
 			}
@@ -432,9 +437,10 @@ class GLSLToMSL
 		symbols.set(name, 'xlatIn.' + mslName);
 	}
 
-	function addVarying(name:String, glslType:String):Void
+	function addVarying(name:String, glslType:String, arrayLen:Int = 0):Void
 	{
-		varyings.push({name: name, glslType: glslType, mslType: mslType(glslType)});
+		varyings.push({name: name, glslType: glslType, mslType: mslType(glslType), arrayLen: arrayLen});
+		varyingNames[name] = true;
 		symbols.set(name, (isVertex ? 'xlatOut.' : 'xlatIn.') + name);
 	}
 
@@ -743,6 +749,26 @@ class GLSLToMSL
 
 				if (!isMember && symbols.exists(t.text))
 				{
+					var n1 = nextSignificant (toks, i);
+					if (n1 >= 0 && toks[n1].kind == Punct && toks[n1].text == '[')
+					{
+						var n2 = nextSignificant (toks, n1);
+						var n3 = (n2 >= 0) ? nextSignificant (toks, n2) : -1;
+						if (n2 >= 0 && n3 >= 0 && toks[n2].kind == Number
+						&&  toks[n3].kind == Punct && toks[n3].text == ']')
+						{
+							var idx = Std.parseInt (toks[n2].text);
+							var sym = symbols.get (t.text);
+							if (idx != null && varyingNames.exists (t.text))
+							{
+								// Array varyings are expanded into separate struct members.
+								out.add (sym + '_' + idx);
+								i = n3 + 1;
+								continue;
+							}
+						}
+					}
+
 					out.add(symbols.get(t.text));
 					i++;
 					continue;
@@ -1220,6 +1246,26 @@ class GLSLToMSL
 				var isMember = prev != null && prev.kind == Punct && prev.text == '.';
 				if (!isMember && symbols.exists(t.text))
 				{
+					var n1 = nextSignificant (toks, i);
+					if (n1 >= 0 && toks[n1].kind == Punct && toks[n1].text == '[')
+					{
+						var n2 = nextSignificant (toks, n1);
+						var n3 = (n2 >= 0) ? nextSignificant (toks, n2) : -1;
+						if (n2 >= 0 && n3 >= 0 && toks[n2].kind == Number
+						&&  toks[n3].kind == Punct && toks[n3].text == ']')
+						{
+							var idx = Std.parseInt (toks[n2].text);
+							var sym = symbols.get (t.text);
+							if (idx != null && varyingNames.exists (t.text))
+							{
+								// Array varyings are expanded into separate struct members.
+								out.add (sym + '_' + idx);
+								i = n3 + 1;
+								continue;
+							}
+						}
+					}
+
 					out.add(symbols.get(t.text));
 					i++;
 					continue;
@@ -1408,7 +1454,21 @@ class GLSLToMSL
 		sb.add('\tfloat4 position [[position]];\n');
 		for (v in varyings)
 		{
-			sb.add('\t${v.mslType} ${v.name};\n');
+			if (v.arrayLen > 0)
+			{
+				// MSL does not accept array members in a stage_in/stage_out struct (the
+				// vertex return type check and the fragment [[stage_in]] check both fail),
+				// so OpenFL's `varying vec2 vBlurCoords[5]` is expanded into five members.
+				// emit() rewrites the constant indices back to those member names.
+				for (k in 0...v.arrayLen)
+				{
+					sb.add('\t${v.mslType} ${v.name}_${k};\n');
+				}
+			}
+			else
+			{
+				sb.add('\t${v.mslType} ${v.name};\n');
+			}
 		}
 		sb.add('};\n\n');
 
@@ -1477,6 +1537,7 @@ class GLSLToMSL
 		finalOut = injectHelperScope(finalOut, isVertex);
 		finalOut = injectFunctionPrototypes(finalOut);
 		finalOut = rewriteSwizzleCompoundAssignments(finalOut);
+		finalOut = rewriteArrayVaryingAccess(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1639,6 +1700,47 @@ class GLSLToMSL
 		}
 		buf.add (out.substr (from));
 		return buf.toString ();
+	}
+
+	/**
+		Array varyings are expanded into members (see the struct emission); texture calls are
+		emitted by emitTextureCall() and bypass the token-level rewrite, so fix the remaining
+		`xlatIn.vBlurCoords[0]` spellings with a final textual pass.
+	**/
+	function rewriteArrayVaryingAccess (code:String):String
+	{
+		var out = code;
+		for (v in varyings)
+		{
+			if (v.arrayLen <= 0) continue;
+			for (prefix in ['xlatIn.', 'xlatOut.'])
+			{
+				var head = prefix + v.name;
+				var search = 0;
+				while (true)
+				{
+					var at = out.indexOf (head + '[', search);
+					if (at < 0) at = out.indexOf (head + ' [', search);
+					if (at < 0) break;
+
+					var open = out.indexOf ('[', at);
+					var close = out.indexOf (']', open + 1);
+					if (open < 0 || close < 0) break;
+
+					var digits = StringTools.trim (out.substring (open + 1, close));
+					var idx = Std.parseInt (digits);
+					if (idx == null)
+					{
+						search = close + 1;
+						continue;
+					}
+
+					out = out.substring (0, at) + head + '_' + Std.string (idx) + out.substring (close + 1);
+					search = at + head.length;
+				}
+			}
+		}
+		return out;
 	}
 
 	function injectSamplerParams(code:String):String

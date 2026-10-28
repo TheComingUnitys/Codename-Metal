@@ -22,9 +22,9 @@ Sources enumerated from:
 | unique source keys | 116 |
 | vertex / fragment | 16 / 100 |
 | cache fingerprint | `1E2E05CC0B0C4AE0` |
-| total MSL bytes | 536693 |
-| **AOT .metallib stages** | **105 / 116** |
-| **AOT .metallib bytes** | **919464** |
+| total MSL bytes | 537793 |
+| **AOT .metallib stages** | **108 / 116** |
+| **AOT .metallib bytes** | **944100** |
 | .metallib build environment | `Apple M3|apple7+|Version 26.6.2 (Build 25G83)` |
 
 ## Every entry
@@ -69,16 +69,16 @@ Sources enumerated from:
 | 36 | `class:openfl.filters.BitmapFilterShader#0/fragment` | fragment | `1F278E1DFD4C103D` | `A07E9083C9320177` | 1628 | 5228 | 1 | 0 | 1 |
 | 37 | `class:openfl.filters.BitmapFilterShader#0/vertex` | vertex | `38E075546BD2D9C6` | `30B35ACDC8A022AF` | 1655 | 5116 | 2 | 2 | 0 |
 | 38 | `class:openfl.filters.BitmapFilterShader#1/fragment` | fragment | `B0457DE62E6D6C6A` | `03DB83AFB069E569` | 1592 | 5212 | 1 | 0 | 1 |
-| 39 | `class:openfl.filters.BlurAlphaShader#0/fragment` | fragment | `ACBF4C045B0DA4A6` | `C549B4C3C80D3B05` | 2339 | 6072 | 2 | 0 | 1 |
-| 40 | `class:openfl.filters.BlurAlphaShader#0/vertex` | vertex | `0155127663EAF7CA` | `FDEB7C41403833A9` | 2094 | - | 3 | 2 | 0 |
-| 41 | `class:openfl.filters.BlurShader#0/fragment` | fragment | `C7470A8CFD637E68` | `7EA1994997CE004B` | 2143 | 5344 | 0 | 0 | 1 |
-| 42 | `class:openfl.filters.BlurShader#0/vertex` | vertex | `E82E8C8DAD4C343F` | `ECF214A4145AB5D6` | 1980 | - | 3 | 2 | 0 |
+| 39 | `class:openfl.filters.BlurAlphaShader#0/fragment` | fragment | `ACBF4C045B0DA4A6` | `C549B4C3C80D3B05` | 2444 | 7004 | 2 | 0 | 1 |
+| 40 | `class:openfl.filters.BlurAlphaShader#0/vertex` | vertex | `0155127663EAF7CA` | `FDEB7C41403833A9` | 2205 | 6224 | 3 | 2 | 0 |
+| 41 | `class:openfl.filters.BlurShader#0/fragment` | fragment | `C7470A8CFD637E68` | `7EA1994997CE004B` | 2269 | 6500 | 0 | 0 | 1 |
+| 42 | `class:openfl.filters.BlurShader#0/vertex` | vertex | `E82E8C8DAD4C343F` | `ECF214A4145AB5D6` | 2113 | 6228 | 3 | 2 | 0 |
 | 43 | `class:openfl.filters.ColorMatrixShader#0/fragment` | fragment | `42C2EA3A0DE54132` | `8E73CCD440AB5438` | 1840 | 6028 | 2 | 0 | 1 |
 | 44 | `class:openfl.filters.ColorMatrixShader#0/vertex` | vertex | `CF429B3694F33F66` | `30B35ACDC8A022AF` | 1657 | 5116 | 2 | 2 | 0 |
 | 45 | `class:openfl.filters.CombineKnockoutShader#0/fragment` | fragment | `6F4816D5D4CB58A9` | `6A51CE3BCCE94023` | 1785 | 5532 | 0 | 0 | 2 |
 | 46 | `class:openfl.filters.CombineShader#0/fragment` | fragment | `A061C60611217DA0` | `6C4748384EC17C2A` | 1790 | 5548 | 0 | 0 | 2 |
-| 47 | `class:openfl.filters.ConvolutionShader#0/fragment` | fragment | `E4E1B94DCE4B6007` | `0A74AE38D5FBEFCE` | 2797 | 6232 | 4 | 0 | 1 |
-| 48 | `class:openfl.filters.ConvolutionShader#0/vertex` | vertex | `5BC65EF33589DAAD` | `7CFA96BBA0C4F8C7` | 2096 | - | 2 | 2 | 0 |
+| 47 | `class:openfl.filters.ConvolutionShader#0/fragment` | fragment | `E4E1B94DCE4B6007` | `0A74AE38D5FBEFCE` | 2965 | 7788 | 4 | 0 | 1 |
+| 48 | `class:openfl.filters.ConvolutionShader#0/vertex` | vertex | `5BC65EF33589DAAD` | `7CFA96BBA0C4F8C7` | 2273 | 6588 | 2 | 2 | 0 |
 | 49 | `class:openfl.filters.DisplacementMapShader#0/fragment` | fragment | `B0B3CEBD9CCE4A0F` | `974FB882595A5FAC` | 2153 | - | 3 | 0 | 2 |
 | 50 | `class:openfl.filters.DisplacementMapShader#0/vertex` | vertex | `4712BFF9B5EC7191` | `BDC74CB305F92D31` | 1767 | 5348 | 2 | 2 | 0 |
 | 51 | `class:openfl.filters.HideShader#0/fragment` | fragment | `C702CDE92BA8D7C9` | `1F8EDFA9FADE53E9` | 1666 | 5460 | 0 | 0 | 2 |
@@ -122,8 +122,8 @@ Sources enumerated from:
 | 89 | `mod:mods/dustin-mod-master/shaders/light/fragment` | fragment | `37CA8F91FFD48461` | `0C599CB6F94D21A0` | 8264 | 14584 | 18 | 0 | 1 |
 | 90 | `mod:mods/dustin-mod-master/shaders/light_preprocess/fragment` | fragment | `D8B3A966AC271A80` | `2714A0B48BB6D3D8` | 6130 | 10036 | 9 | 0 | 1 |
 | 91 | `mod:mods/dustin-mod-master/shaders/line/fragment` | fragment | `B3064EBB937D8A8F` | `F127B520C55AF82C` | 4241 | - | 6 | 0 | 1 |
-| 92 | `mod:mods/dustin-mod-master/shaders/papyruseye/fragment` | fragment | `1A132EB021652D46` | `C74F9D9E54242EC6` | 4240 | 7152 | 6 | 0 | 1 |
-| 93 | `mod:mods/dustin-mod-master/shaders/papyruseye/vertex` | vertex | `25DC6114345C084C` | `06AC65EEA9CB0CE8` | 2050 | 6788 | 6 | 8 | 0 |
+| 92 | `mod:mods/dustin-mod-master/shaders/papyruseye/fragment` | fragment | `1A132EB021652D46` | `C74F9D9E54242EC6` | 4380 | 8196 | 6 | 0 | 1 |
+| 93 | `mod:mods/dustin-mod-master/shaders/papyruseye/vertex` | vertex | `25DC6114345C084C` | `06AC65EEA9CB0CE8` | 2190 | 7696 | 6 | 8 | 0 |
 | 94 | `mod:mods/dustin-mod-master/shaders/pixel/fragment` | fragment | `EAB86C3874BCD92E` | `2E1790653920FC8D` | 4490 | 7796 | 7 | 0 | 1 |
 | 95 | `mod:mods/dustin-mod-master/shaders/pixel_vig/fragment` | fragment | `A7FE9B66EE3706D6` | `A55AC178A94ABFBA` | 4599 | 8428 | 10 | 0 | 1 |
 | 96 | `mod:mods/dustin-mod-master/shaders/radial/fragment` | fragment | `92DBDE8CA23B2DAC` | `987783214948D8AD` | 4616 | 8180 | 7 | 0 | 1 |
