@@ -21,10 +21,10 @@ Sources enumerated from:
 | cached shader stages | 116 |
 | unique source keys | 116 |
 | vertex / fragment | 16 / 100 |
-| cache fingerprint | `1E2E05CC0B0C4AE0` |
-| total MSL bytes | 537773 |
-| **AOT .metallib stages** | **109 / 116** |
-| **AOT .metallib bytes** | **950404** |
+| cache fingerprint | `298268D451B47C6C` |
+| total MSL bytes | 537839 |
+| **AOT .metallib stages** | **111 / 116** |
+| **AOT .metallib bytes** | **964020** |
 | .metallib build environment | `Apple M3|apple7+|Version 26.6.2 (Build 25G83)` |
 
 ## Every entry
@@ -50,8 +50,8 @@ Sources enumerated from:
 | 17 | `class:flixel.graphics.tile.FlxGraphicsShader#1/vertex` | vertex | `E4874A95E5BDB0CB` | `3C3E33DCB84F8362` | 2424 | 6672 | 4 | 8 | 0 |
 | 18 | `class:flxanimate.FilterShader#0/fragment` | fragment | `329085FE9AE9CCD6` | `CB4F17C2CAAFB164` | 5563 | 9692 | 8 | 0 | 1 |
 | 19 | `class:flxanimate.FilterShader#1/fragment` | fragment | `5F20117E5ED85396` | `CB4F17C2CAAFB164` | 5563 | 9692 | 8 | 0 | 1 |
-| 20 | `class:funkin.backend.shaders.OverlayShader#0/fragment` | fragment | `270314D062706610` | `4DBFFECEB2E4E9B0` | 4566 | - | 6 | 0 | 1 |
-| 21 | `class:funkin.backend.shaders.OverlayShader#1/fragment` | fragment | `5830E850158333D0` | `4DBFFECEB2E4E9B0` | 4566 | - | 6 | 0 | 1 |
+| 20 | `class:funkin.backend.shaders.OverlayShader#0/fragment` | fragment | `CC676A6BF4A0C7D1` | `6182939419DB92B2` | 4599 | 6808 | 6 | 0 | 1 |
+| 21 | `class:funkin.backend.shaders.OverlayShader#1/fragment` | fragment | `FB6908EBE81BF091` | `6182939419DB92B2` | 4599 | 6808 | 6 | 0 | 1 |
 | 22 | `class:funkin.backend.shaders.WiggleShader#0/fragment` | fragment | `BA570F9D20F90D47` | `26916B80B6A0A22A` | 5618 | 8292 | 10 | 0 | 1 |
 | 23 | `class:funkin.backend.shaders.WiggleShader#1/fragment` | fragment | `3775361D05A86587` | `26916B80B6A0A22A` | 5618 | 8292 | 10 | 0 | 1 |
 | 24 | `class:openfl.display.DisplayObjectShader#0/fragment` | fragment | `372CBBD2672E7BA2` | `D6E5E1D9CA743FEB` | 2469 | 6792 | 2 | 0 | 1 |

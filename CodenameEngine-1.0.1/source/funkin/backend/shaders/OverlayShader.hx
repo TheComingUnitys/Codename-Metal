@@ -9,7 +9,7 @@ class OverlayShader extends FlxShader
 #pragma header
 uniform vec4 uBlendColor;
 
-vec3 blendLighten(base:Vec3, blend:Vec3) : Vec3 {
+vec3 blendLighten(vec3 base, vec3 blend) {
 	return mix(
 		1.0 - 2.0 * (1.0 - base) * (1.0 - blend),
 		2.0 * base * blend,
@@ -19,7 +19,8 @@ vec3 blendLighten(base:Vec3, blend:Vec3) : Vec3 {
 
 vec4 blendLighten(vec4 base, vec4 blend, float opacity)
 {
-	return (blendLighten(base, blend) * opacity + base * (1.0 - opacity));
+	vec3 blended = blendLighten(base.rgb, blend.rgb);
+	return vec4(blended * opacity + base.rgb * (1.0 - opacity), 1.0);
 }
 
 void main()
