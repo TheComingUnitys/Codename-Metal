@@ -43,10 +43,10 @@
 | 项 | 数值 | 影响 |
 | --- | --- | --- |
 | 缓存 stage 总数 | 116（16 vertex / 100 fragment） | — |
-| 已预编译 `.metallib` | **26 / 116** | 其余 90 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
-| 构建期 GLSL→MSL 翻译失败 | **13 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
+| 已预编译 `.metallib` | **105 / 116** | 其余 11 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
+| 构建期 GLSL→MSL 翻译失败 | **11 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
 
-### 2.1 构建期翻译失败的 13 个 stage（按错误分类）
+### 2.1 构建期翻译失败的 11 个 stage（按错误分类）
 
 | # | shader | 错误摘要 |
 | --- | --- | --- |
@@ -60,19 +60,20 @@
 | 8 | `mods/.../cable/fragment` | 函数式强制转换语法 `float(...)` / 类型名解析失败 |
 | 9 | `mods/.../firething/fragment` | 使用了未前置声明的 `noise1` |
 | 10 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
-| 11 | `mods/.../scaryGlitch/fragment` | 非 const 引用绑定到向量元素 |
-| 12 | `mods/.../vhs/fragment` | 同上 |
-| 13 | `mods/.../wi/fragment` | 未知类型 `_mtl_u`（uniform 结构命名冲突） |
+| 11 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
+
+> 已修复（本轮）：`wi.fragment`（`_mtl_u` 重复参数）与 `vhs.fragment`（swizzle 复合赋值）；
+> 另有翻译器增强：顶层 helper 前置声明、重复作用域参数折叠。
 
 **TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这 13 类写法可翻译（每类约 1 处规则），
 目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
 
-### 2.2 `.metallib` 只有 26/116
+### 2.2 `.metallib` 只有 105/116
 
 - 原因：本机只有 Command Line Tools，`metal/tools/CompileShaderAot.mm` 对部分 MSL 无法离线编译（日志 `cannot write .metallib`）；
 - TODO：逐条修 `cannot write .metallib` 的 MSL 生成（多为 `_mtl_u`/地址空间/模板辅助函数命名问题），
   或引入完整 Xcode/离线 `xcrun metal` 流程；验收 = `metallib compiled : 116 / 116`。
-- 影响：90 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
+- 影响：11 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
 
 ### 2.3 运行时翻译兜底仍然默认开启
 
@@ -89,19 +90,21 @@
 现状（已核实源码）：
 
 - 交换链和离屏 FBO **都有** `D24S8`（`MetalContext.cpp:702`、`MetalBindings.cpp:4393-4396`），硬件条件具备；
-- `lime_gl_stencil_func/op/mask` 只写入 `msStencilFront/Back`（`MetalStates.inc:1125+`）；
-- `MetalStates.inc` 里已有 `MsPackTest/MsPackOp/MsPackFace` 等 GL→bgfx 转换 helper（约 1180–1290 行），**但从未被调用**；
-- `ToBgfxState()`（`MetalBindings.cpp:956`）**完全不生成 stencil 状态位**；
-- `lime_gl_color_mask` 只记录 `state.colorWrite`，`ToBgfxState` 恒写 `WRITE_RGB|WRITE_A`；
-- `lime_gl_enable/disable(GL_STENCIL_TEST)` 只记录 bool。
+- `lime_gl_stencil_func/op/mask` 写入 `msStencilFront/Back`（`MetalStates.inc:1125+`）；
+- `MetalStates.inc` 已有 `MsPackStencil/MsPackTest/MsPackOp*`，且 **`ApplyStencilState()` 已在
+  `SubmitDraw()` 中调用**（`MetalBindings.cpp:5992`）→ stencil test/op/ref 已真正下发；
+- **仍缺**：`lime_gl_color_mask` 只记录 `state.colorWrite`，`ToBgfxState()`（`MetalBindings.cpp:956`）
+  恒写 `WRITE_RGB|WRITE_A` → mask 形状会以不透明颜色画出；
+- bgfx v167 的 32 位 stencil 字里**没有 write-mask 字段**，`lime_gl_stencil_mask` 的写掩码目前无法下发
+  （会影响嵌套 mask，需要在 Metal 侧另做或接受限制）；
+- 还需要一个真正使用 `.mask` 的场景做回归验证。
 
 **TODO（中工作量）**：
 
-1. `ToBgfxState()` 增加 `BGFX_STATE_STENCIL_*`（test/func/ref/mask/op），按 `msStencilFront/Back` 生成；
-2. `colorWrite` 映射到 `BGFX_STATE_WRITE_R/G/B/A`；
-3. `enable(GL_STENCIL_TEST)` 参与状态；
-4. 用一个使用 `.mask` 的最小场景验证（OpenFL mask 会先画 mask 形状再画内容）；
-5. 顺带验证 `lime_gl_stencil_op_separate` 与 back-face 参数。
+1. `ToBgfxState()` 用 `state.colorWrite` 生成 `BGFX_STATE_WRITE_R/G/B/A`；
+2. 评估 stencil write-mask：要么接受限制，要么在 Metal 层自行维护帧内 mask 栈；
+3. 用一个使用 `.mask` 的最小场景验证（OpenFL mask 会先画 mask 形状再画内容）；
+4. 顺带验证 `lime_gl_stencil_op_separate` 与 back-face 参数。
 
 验收：自建 `Sprite.mask` 场景，遮罩生效且 mask 形状不可见；正常游戏画面无回归。
 

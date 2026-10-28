@@ -1476,6 +1476,7 @@ class GLSLToMSL
 		finalOut = injectSamplerParams(finalOut);
 		finalOut = injectHelperScope(finalOut, isVertex);
 		finalOut = injectFunctionPrototypes(finalOut);
+		finalOut = rewriteSwizzleCompoundAssignments(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1606,6 +1607,38 @@ class GLSLToMSL
 		var head = '';
 		for (pr in protos) head += pr + '\n';
 		return code.substring(0, firstDef) + head + code.substring(firstDef);
+	}
+
+	/**
+		MSL has no `operator*=` for `float2 *= float2x2` / `float2 *= float2` on a swizzle
+		lvalue (Apple's compiler reports "non-const reference cannot bind to vector
+		element"), while GLSL allows it.  Rewrite such compound assignments into the
+		equivalent "lhs = lhs op (rhs)" form.  Generated MSL statements are single lines,
+		so a textual pass is enough.
+	**/
+	static function rewriteSwizzleCompoundAssignments (code:String):String
+	{
+		// Negative look-behind keeps struct-typed lvalues such as
+		// `xlatOut.color.xyz *= ...` intact: rewriting only the trailing `.color.xyz`
+		// produced `xlatOut.color.xyz = color.xyz * (...)` and broke the shader.
+		var re = new EReg ("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*[xyzwrgba]{2,4})\\s*([+\\-*/])=\\s*([^;\\n]+)", "g");
+		var out = code;
+		var from = 0;
+		var buf = new StringBuf ();
+		while (re.match (out.substr (from)))
+		{
+			var start = from + re.matchedPos ().pos;
+			buf.add (out.substring (from, start));
+			buf.add (re.matched (1));
+			buf.add (" = ");
+			buf.add (re.matched (1));
+			buf.add (" " + re.matched (2) + " (");
+			buf.add (re.matched (3));
+			buf.add (")");
+			from = start + re.matched (0).length;
+		}
+		buf.add (out.substr (from));
+		return buf.toString ();
 	}
 
 	function injectSamplerParams(code:String):String
