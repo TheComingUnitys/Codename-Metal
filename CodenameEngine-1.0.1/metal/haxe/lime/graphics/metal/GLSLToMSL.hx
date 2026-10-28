@@ -1475,6 +1475,7 @@ class GLSLToMSL
 		finalOut = rewriteSwizzles (finalOut);
 		finalOut = injectSamplerParams(finalOut);
 		finalOut = injectHelperScope(finalOut, isVertex);
+		finalOut = injectFunctionPrototypes(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1529,6 +1530,84 @@ class GLSLToMSL
 		(names matching the globals the translated body already references) and every
 		call site has to pass the pair as well.
 	**/
+	/**
+		MSL (like C) requires a declaration before use, but mod shaders sometimes define a
+		helper `noise2_2` that calls `noise1` before `noise1`'s own definition (GLSL drivers
+		happen to accept it, Apple's Metal compiler does not: "use of undeclared identifier
+		'noise1'").  Emit a prototype for every top-level helper function right before the
+		first definition, so call order no longer matters.
+	**/
+	function injectFunctionPrototypes (code:String):String
+	{
+		var protos:Array<String> = [];
+		var seen = new Map<String, Bool> ();
+		var firstDef = -1;
+
+		var i = 0;
+		while (i < code.length)
+		{
+			if (i > 0 && code.charAt(i - 1) != '\n')
+			{
+				i++;
+				continue;
+			}
+
+			var paren = code.indexOf('(', i);
+			if (paren < 0) break;
+
+			var ne = paren;
+			while (ne > i && isSpace(code.charAt(ne - 1))) ne--;
+			var ns = ne;
+			while (ns > i && isIdentChar(code.charAt(ns - 1))) ns--;
+			var name = code.substring(ns, ne);
+
+			if (name.length == 0 || !isIdentStart(name.charAt(0)))
+			{
+				i = paren + 1;
+				continue;
+			}
+
+			var cp = matchCloseStr(code, paren, '(', ')');
+			if (cp < 0)
+			{
+				i = paren + 1;
+				continue;
+			}
+
+			var j = cp + 1;
+			while (j < code.length && isSpace(code.charAt(j))) j++;
+			if (j >= code.length || code.charAt(j) != '{')
+			{
+				i = paren + 1;
+				continue;
+			}
+
+			var be = matchCloseStr(code, j, '{', '}');
+			if (be < 0) break;
+
+			if (name != 'xlatMtlMain' && !seen.exists(name))
+			{
+				var lineStart = code.lastIndexOf('\n', ns) + 1;
+				var sig = code.substring(lineStart, cp + 1);
+				// only plain signatures (no attributes/initialisers)
+				if (sig.indexOf('[[buffer') < 0 && sig.indexOf('=') < 0)
+				{
+					seen[name] = true;
+					protos.push(sig + ';');
+					if (firstDef < 0) firstDef = lineStart;
+				}
+			}
+
+			i = be + 1;
+		}
+
+		if (protos.length == 0 || firstDef < 0) return code;
+
+		var head = '';
+		for (pr in protos) head += pr + '\n';
+		return code.substring(0, firstDef) + head + code.substring(firstDef);
+	}
+
 	function injectSamplerParams(code:String):String
 	{
 		var defs:Array<{name:String, at:Int}> = [];
@@ -1941,6 +2020,13 @@ class GLSLToMSL
 
 		if (insPos.length == 0) return code;
 
+		// Overloaded helpers (mod shaders redefine mod289( vec3 ) / mod289( vec2 )) can make
+		// the call-site argument insertion land on the definition's own parameter list as
+		// well, producing e.g.
+		//     float snoise (float2 v , _mtl_u, constant XlatMtlUniforms& _mtl_u)
+		// and duplicated call arguments.  MSL rejects the bare parameter.  Collapse those
+		// duplicates; every occurrence comes from this pass, so the pattern is exact.
+
 		// --- 3. apply in descending position order --------------------------------
 		var order:Array<Int> = [for (n in 0...insPos.length) n];
 		order.sort(function(a, b) return insPos[b] - insPos[a]);
@@ -1950,6 +2036,16 @@ class GLSLToMSL
 		{
 			out = out.substring(0, insPos[n]) + insTxt[n] + out.substring(insPos[n]);
 		}
+
+		// Collapse duplicates created above (see the note before step 3).  These patterns
+		// only exist because of our own insertions, so the replacement is unambiguous.
+		out = StringTools.replace (out, ', _mtl_u, constant XlatMtlUniforms& _mtl_u', ', constant XlatMtlUniforms& _mtl_u');
+		out = StringTools.replace (out, ', xlatIn, XlatMtlVaryings xlatIn', ', XlatMtlVaryings xlatIn');
+		out = StringTools.replace (out, ', xlatOut, thread XlatMtlVaryings& xlatOut', ', thread XlatMtlVaryings& xlatOut');
+		out = StringTools.replace (out, ', xlatOut, thread XlatMtlFragOut& xlatOut', ', thread XlatMtlFragOut& xlatOut');
+		out = StringTools.replace (out, ', _mtl_u, _mtl_u)', ', _mtl_u)');
+		out = StringTools.replace (out, ', xlatIn, xlatIn)', ', xlatIn)');
+		out = StringTools.replace (out, ', xlatOut, xlatOut)', ', xlatOut)');
 
 		return out;
 	}
