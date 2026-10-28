@@ -15,7 +15,7 @@
 | 2D 渲染全部经 `lime_gl_draw_elements → SubmitDraw → bgfx::submit` | ✅ | `metal/audit/paths.md`、`primitives.md` §1.5（submit 计数 == glDrawElements 计数） |
 | 无 GL context / 无 GL 交换链 | ✅ | `metal/scripts/audit-render-paths.sh`；`SDL_WINDOW_OPENGL` 计数 0 |
 | 着色器为构建期 GLSL→MSL，运行时零翻译（可枚举的 shader） | ✅ 116 stage 入缓存 | `ShaderAotCache.hx` `COUNT=116` |
-| Dusttale 黑屏 / shader 编译失败 / 方向 / 菜单卡顿 | ✅ 已修 | `HANDOFF.md` 第十节 |
+| Dusttale 黑屏 / shader 编译失败 / 方向 / 菜单卡顿 | ✅ 已修 | `CodenameEngine-1.0.1/metal/README.md`（开发日志） |
 | FBO/滤镜/额外相机/视频画面 | ✅ 已跑通 | 2026-10-28 实机验证（主菜单/Cutscene/选谱/Dusttale/WH） |
 
 ---
@@ -256,4 +256,3 @@ python3 metal/scripts/gen_shader_aot.py
 - `metal/audit/openfl-native.md` — 消除 GL 形状的原生化方案（方案 B + Phase 0–4 + 直连 Metal 原型）
 - `metal/audit/aot-shaders.md` / `aot-coverage.md` — AOT 覆盖与逐 stage 明细
 - `metal/README.md` — 构建/补丁/历史问题记录（§63 为遗留问题与结论）
-- `HANDOFF.md` — 项目交接（第十节为 Dusttale/mod 兼容专项与最终修复）

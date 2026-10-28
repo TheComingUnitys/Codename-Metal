@@ -38,7 +38,6 @@ Codename-Metal/
 ├── README.MD                  ← 本文件
 ├── LICENSE                    ← Apache-2.0（上游许可证副本）
 ├── docs/
-│   ├── HANDOFF.md             ← 项目交接记录（实现细节、调试历史、结论）
 │   └── METAL-TODO.md          ← Metal 后端剩余工作清单（架构/AOT/2D 功能/3D/工程债）
 ├── CodenameEngine-1.0.1/      ← 游戏工程（上游 CNE 1.0.1 源码 + 本仓库的 Metal 改动）
 │   ├── project.xml
@@ -241,7 +240,8 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 3. **AOT 着色器**：构建期 GLSL→MSL 翻译 + `.metallib` 预编译；运行时只做 hash 查表，
    避免冷启动/首次进入状态的 shader 编译卡顿。
 4. **方向/镜像规则**：渲染到离屏目标时按需对矩阵做 Y 镜像补偿；屏幕合成按"该目标的实际渲染方向"
-   决定是否翻 V。该规则由 `CNE_METAL_DRAWPROBE/UVLOG` 实测确定，详见 `docs/HANDOFF.md`。
+   决定是否翻 V。该规则由 `CNE_METAL_DRAWPROBE/UVLOG` 实测确定，开发细节见
+   `CodenameEngine-1.0.1/metal/README.md`。
 5. **FBO 缓存**：按 (GL FBO, 附件纹理) 组合缓存 bgfx FrameBuffer，支持 GL 的 ping-pong 语义；
    纹理重传时自动失效关联 FBO。
 6. **性能**：索引/顶点缓冲使用 revision 键做 O(1) 缓存；纹理同尺寸重传走 `updateTexture2D` 原地更新；
@@ -292,5 +292,5 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 - Haxe 生态：Lime、OpenFL、HaxeFlixel、flxanimate、hxvlc 等，遵循各自许可证。
 - 本仓库的 Metal 后端代码、脚本与文档：Apache-2.0（与上游工程一致）。
 
-如果这个移植对你有帮助，欢迎提出 issue / PR；调试与设计细节请先读 `docs/HANDOFF.md` 与
-`CodenameEngine-1.0.1/metal/README.md`。
+如果这个移植对你有帮助，欢迎提出 issue / PR；调试与设计细节请先读
+`CodenameEngine-1.0.1/metal/README.md` 与 `docs/METAL-TODO.md`。

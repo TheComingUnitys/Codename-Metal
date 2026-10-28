@@ -2867,7 +2867,7 @@ SDLWindow (SDLView, 被 SDL 接管)
 
 ## 49. ★ 第四十九轮：两个遗留问题全部定位并修复（Shape 崩溃 + R↔B 互换）
 
-本轮把 HANDOFF 里的两个遗留问题**全部解决**，并各自留下了可复现的证据链。
+本轮把此前遗留的两个问题**全部解决**，并各自留下了可复现的证据链。
 
 | # | 问题 | 根因 | 修法 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -4315,7 +4315,7 @@ CNE_METAL_FBO_FLIP=0 CNE_METAL_RT_UVFLIP=2 CNE_METAL_SHOW_WORLDCORNER=1 \
   export/release/macos/bin/CodenameEngine.app/Contents/MacOS/CodenameEngine > /tmp/cne-runC.log 2>&1
 ```
 
-判读组合见 [../../docs/HANDOFF.md](../../docs/HANDOFF.md) 第三节第 1 项（左上角有画面/黑 × Run B 正常/仍黑 四种结论）。
+判读组合见上游交接记录的第三节第 1 项（左上角有画面/黑 × Run B 正常/仍黑 四种结论）。
 
 ### 63.2 启动卡顿分段计时（`CNE_METAL_HITCH_DETAIL=1`）
 
@@ -5351,5 +5351,5 @@ CNE_METAL_RT_TRANSPARENT_CLEAR=0 可关闭。
 
 已知遗留（与渲染正确性无关）：
 - AOT 缓存中 11 个 stage 回退运行期源码编译（升级前的既有现象）；
-- 历史遗留的启动偶发卡顿未再追（见 HANDOFF 第三节问题 2）。
+- 历史遗留的启动偶发卡顿未再追（见本文件前面的记录）。
 
