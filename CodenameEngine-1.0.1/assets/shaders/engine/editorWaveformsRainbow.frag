@@ -19,7 +19,9 @@ uniform float pixelOffset;
 uniform float playerPosition;
 
 uniform sampler2D waveformTexture;
-uniform ivec2 waveformSize;
+// float, not ivec2: the body does float arithmetic without casts and ML/GL implicit
+// int->float conversions do not exist in MSL; the Haxe side uploads [width, height].
+uniform vec2 waveformSize;
 
 uniform bool lowDetail;
 

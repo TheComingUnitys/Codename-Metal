@@ -21,10 +21,10 @@ Sources enumerated from:
 | cached shader stages | 116 |
 | unique source keys | 116 |
 | vertex / fragment | 16 / 100 |
-| cache fingerprint | `298268D451B47C6C` |
-| total MSL bytes | 537839 |
-| **AOT .metallib stages** | **111 / 116** |
-| **AOT .metallib bytes** | **964020** |
+| cache fingerprint | `09A6E598A7C07002` |
+| total MSL bytes | 537834 |
+| **AOT .metallib stages** | **112 / 116** |
+| **AOT .metallib bytes** | **972780** |
 | .metallib build environment | `Apple M3|apple7+|Version 26.6.2 (Build 25G83)` |
 
 ## Every entry
@@ -41,7 +41,7 @@ Sources enumerated from:
 | 8 | `asset:assets/shaders/engine/editorBlur/fragment` | fragment | `15B4B439199F3407` | `95EED06104A0378F` | 5107 | 8412 | 5 | 0 | 1 |
 | 9 | `asset:assets/shaders/engine/editorBlurFast/fragment` | fragment | `C041F06B397C8E8B` | `73FBC1E109565D97` | 5489 | 8544 | 6 | 0 | 2 |
 | 10 | `asset:assets/shaders/engine/editorWaveforms/fragment` | fragment | `14C8BF12222279D4` | `91BE85FA9BACCF86` | 8960 | 10868 | 10 | 0 | 2 |
-| 11 | `asset:assets/shaders/engine/editorWaveformsRainbow/fragment` | fragment | `129029FC74B57508` | `19A8259F3853FE7D` | 7564 | - | 11 | 0 | 2 |
+| 11 | `asset:assets/shaders/engine/editorWaveformsRainbow/fragment` | fragment | `BE434B6F40898CD5` | `0FB93050AF99F3D4` | 7559 | 8760 | 11 | 0 | 2 |
 | 12 | `asset:assets/shaders/engine/updaterShader/fragment` | fragment | `3F7ED63A5818CE4E` | `A473E41EA6FD93EE` | 5054 | 8568 | 7 | 0 | 1 |
 | 13 | `asset:assets/shaders/pixelZoomShader/fragment` | fragment | `6E59685876B1BA2E` | `1309E5F0F00A286A` | 4277 | 7476 | 6 | 0 | 1 |
 | 14 | `class:flixel.graphics.tile.FlxGraphicsShader#0/fragment` | fragment | `A376DEED889FCAF5` | `A2B6CF5F9AD034B5` | 4142 | 6908 | 5 | 0 | 1 |

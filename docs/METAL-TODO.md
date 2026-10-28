@@ -43,18 +43,17 @@
 | 项 | 数值 | 影响 |
 | --- | --- | --- |
 | 缓存 stage 总数 | 116（16 vertex / 100 fragment） | — |
-| 已预编译 `.metallib` | **111 / 116** | 其余 5 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
-| 构建期 GLSL→MSL 翻译失败 | **5 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
+| 已预编译 `.metallib` | **112 / 116** | 其余 4 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
+| 构建期 GLSL→MSL 翻译失败 | **4 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
 
-### 2.1 构建期仍失败的 5 个 stage（按错误分类）
+### 2.1 构建期仍失败的 4 个 stage（按错误分类）
 
 | # | shader | 错误摘要 |
 | --- | --- | --- |
-| 1 | `assets/shaders/engine/editorWaveformsRainbow/fragment` | `float2` 与 `int2` 隐式转换 |
-| 2 | `mods/.../cable/fragment` | 依赖 `TWO_PHASE`/`THREE_PHASE` define，未定义时变量缺失（mod 源问题） |
-| 3 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
-| 4 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
-| 5 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
+| 1 | `mods/.../cable/fragment` | 依赖 `TWO_PHASE`/`THREE_PHASE` define，未定义时变量缺失（mod 源问题） |
+| 2 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
+| 3 | `mods/.../line/fragment` | 下标作用于非数组/向量 |
+| 4 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
 
 > 已修复：`wi.fragment`（`_mtl_u` 重复参数）、`vhs.fragment`（swizzle 复合赋值）、
 > 3 个 OpenFL filter shader（`varying vec2 vBlurCoords[5]` 的数组 varying 支持）、
@@ -62,16 +61,18 @@
 > 重复作用域参数折叠、GLSL 数组构造 `float[N](...)` → `{...}`。
 > 另修复引擎源码 `source/funkin/backend/shaders/OverlayShader.hx` 的非法 GLSL
 > （`base:Vec3` 伪类型、vec4 重载调用参数不匹配），两个 OverlayShader stage 现已可编译。
+> 另修正 `assets/shaders/engine/editorWaveformsRainbow.frag`：`uniform ivec2 waveformSize` → `vec2`
+> （MSL 没有隐式 int→float 转换，且 Haxe 侧上传的本来就是浮点 [w,h]）。
 
 **TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这些写法可翻译（每类约 1 处规则），
 目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
 
-### 2.2 `.metallib` 只有 111/116
+### 2.2 `.metallib` 只有 112/116
 
 - 原因：本机只有 Command Line Tools，`metal/tools/CompileShaderAot.mm` 对部分 MSL 无法离线编译（日志 `cannot write .metallib`）；
 - TODO：逐条修 `cannot write .metallib` 的 MSL 生成（多为 `_mtl_u`/地址空间/模板辅助函数命名问题），
   或引入完整 Xcode/离线 `xcrun metal` 流程；验收 = `metallib compiled : 116 / 116`。
-- 影响：5 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
+- 影响：4 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
 
 ### 2.3 运行时翻译兜底仍然默认开启
 
