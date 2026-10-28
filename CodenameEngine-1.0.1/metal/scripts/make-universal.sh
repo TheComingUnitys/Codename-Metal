@@ -53,27 +53,52 @@ cp "$TOOLCHAIN" "$OUT/mac-toolchain.xml.orig"
 trap 'cp "$OUT/mac-toolchain.xml.orig" "$TOOLCHAIN"; sed -i "" "s|\.build/osx-x64/bin|.build/osx-arm64/bin|g" "$BUILD_XML" 2>/dev/null || true' EXIT
 
 # ------------------------------------------------------------------ arm64 pass
-say "pass 1/2: arm64"
-sed -i "" 's|\.build/osx-x64/bin|.build/osx-arm64/bin|g' "$BUILD_XML"
-rm -rf "$LIME_DIR/project/obj"
-haxelib run lime rebuild mac -Dmetal
-[ -f "$NDLL" ] || die "arm64 lime rebuild produced no $NDLL"
-haxelib run lime build mac
-cp "$NDLL" "$OUT/lime-64-arm64.ndll"
-cp "$BIN"  "$OUT/CodenameEngine-arm64"
-lipo -archs "$OUT/lime-64-arm64.ndll" "$OUT/CodenameEngine-arm64"
+REUSE="${REUSE:-0}"
+if [ "$REUSE" = "1" ] && [ -f "$OUT/CodenameEngine-arm64" ] && [ -f "$OUT/lime-64-arm64.ndll" ]; then
+	say "pass 1/2: arm64 (reusing $OUT)"
+	lipo -archs "$OUT/lime-64-arm64.ndll"
+	lipo -archs "$OUT/CodenameEngine-arm64"
+else
+	say "pass 1/2: arm64"
+	sed -i "" 's|\.build/osx-x64/bin|.build/osx-arm64/bin|g' "$BUILD_XML"
+	rm -rf "$LIME_DIR/project/obj"
+	haxelib run lime rebuild mac -Dmetal
+	[ -f "$NDLL" ] || die "arm64 lime rebuild produced no $NDLL"
+	haxelib run lime build mac
+	cp "$NDLL" "$OUT/lime-64-arm64.ndll"
+	cp "$BIN"  "$OUT/CodenameEngine-arm64"
+	lipo -archs "$OUT/lime-64-arm64.ndll"
+	lipo -archs "$OUT/CodenameEngine-arm64"
+fi
 
 # ------------------------------------------------------------------ x86_64 pass
-say "pass 2/2: x86_64"
-sed -i "" 's|\.build/osx-arm64/bin|.build/osx-x64/bin|g' "$BUILD_XML"
-rm -rf "$LIME_DIR/project/obj"
-haxelib run lime rebuild mac -Dmetal -DCNE_X64
-[ -f "$NDLL" ] || die "Intel lime rebuild produced no $NDLL"
-cp "$NDLL" "$OUT/lime-64-x86_64.ndll"
-lipo -archs "$OUT/lime-64-x86_64.ndll"
+if [ "$REUSE" = "1" ] && [ -f "$OUT/CodenameEngine-intel-last" ] && [ -f "$OUT/lime-64-x86_64.ndll" ]; then
+	say "pass 2/2: x86_64 (reusing $OUT)"
+	lipo -archs "$OUT/lime-64-x86_64.ndll"
+	lipo -archs "$OUT/CodenameEngine-intel-last"
+else
+	say "pass 2/2: x86_64"
+	sed -i "" 's|\.build/osx-arm64/bin|.build/osx-x64/bin|g' "$BUILD_XML"
+	rm -rf "$LIME_DIR/project/obj"
+	haxelib run lime rebuild mac -Dmetal -DCNE_X64
+	[ -f "$NDLL" ] || die "Intel lime rebuild produced no $NDLL"
+	cp "$NDLL" "$OUT/lime-64-x86_64.ndll"
+	lipo -archs "$OUT/lime-64-x86_64.ndll"
 
-haxelib run lime build mac || true
-cp "$BIN" "$OUT/CodenameEngine-intel-last"
+	# The game-side executable cannot be cross-built through `lime build mac`: Lime reads
+	# the target architecture from the HOST (MacPlatform.hx targetArchitecture), so it
+	# always emits arm64 here.  Build the Intel slice the way MacPlatform would, but with
+	# the x86_64 defines hxcpp needs:
+	#   haxe <hxml> -D HXCPP_CLANG -D HXCPP_M64
+	#   haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64
+	# HXCPP_M64 maps to HXCPP_ARCH=x86_64 in hxcpp/toolchain/mac-toolchain.xml and hxcpp
+	# writes to obj/darwin64, so the arm64 objects from pass 1 stay untouched.
+	[ -f "$PROJECT_DIR/export/release/macos/obj/Build.xml" ] || \
+		die "run the arm64 pass first: the Intel slice reuses its generated cpp/manifest tree"
+	(cd "$PROJECT_DIR" && haxe export/release/macos/haxe/release.hxml -D HXCPP_CLANG -D HXCPP_M64)
+	(cd "$PROJECT_DIR/export/release/macos/obj" && haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64)
+	cp "$PROJECT_DIR/export/release/macos/obj/ApplicationMain" "$OUT/CodenameEngine-intel-last"
+fi
 
 # ------------------------------------------------------------------ merge
 say "merging"
