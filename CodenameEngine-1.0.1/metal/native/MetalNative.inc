@@ -835,7 +835,18 @@
 		// surfaces exactly this way (glTexImage2D(..., null)) and then attaches them with
 		// glFramebufferTexture2D.  bgfx refuses such an attachment unless the texture was
 		// created with BGFX_TEXTURE_RT, and the flag cannot be added later.
-		const bool sameHandle = bgfx::isValid (texture->handle)
+		// OFF by default: bgfx::updateTexture2D is not valid for the textures this backend
+		// creates (they are allocated with BGFX_TEXTURE_RT so they can later be attached to
+		// a framebuffer), and calling it silently blanked every texture - the whole game
+		// rendered black.  Re-creating the handle is the correct behaviour; the option is
+		// kept for experiments only.
+		static const bool texUpdateEnabled = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_TEX_UPDATE");
+			return v != nullptr && v[0] == '1';
+		} ();
+		const bool sameHandle = texUpdateEnabled
+			&& bgfx::isValid (texture->handle)
 			&& texture->handleWidth == width
 			&& texture->handleHeight == height
 			&& texture->handleFormat == (uint64_t)bgfxFmt;
