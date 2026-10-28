@@ -184,6 +184,12 @@ namespace metal {
 				bool scissorEnabled = false;
 				bool depthTest = false;
 				bool depthWrite = true;
+				// GL state that used to be recorded as a bool only (or ignored entirely).
+				// bgfx can express all of these, so the values are mirrored and mapped in
+				// ToBgfxState() instead of being dropped.
+				int depthFunc = 0x0203;    // GL_LEQUAL
+				int cullFaceMode = 0x0405; // GL_BACK
+				int frontFace = 0x0901;    // GL_CCW
 				bool blendEnabled = false;
 				bool cullFace = false;
 				bool stencilTest = false;

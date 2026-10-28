@@ -91,18 +91,17 @@
 - `lime_gl_stencil_func/op/mask` 写入 `msStencilFront/Back`（`MetalStates.inc:1125+`）；
 - `MetalStates.inc` 已有 `MsPackStencil/MsPackTest/MsPackOp*`，且 **`ApplyStencilState()` 已在
   `SubmitDraw()` 中调用**（`MetalBindings.cpp:5992`）→ stencil test/op/ref 已真正下发；
-- **仍缺**：`lime_gl_color_mask` 只记录 `state.colorWrite`，`ToBgfxState()`（`MetalBindings.cpp:956`）
-  恒写 `WRITE_RGB|WRITE_A` → mask 形状会以不透明颜色画出；
+- ~~`lime_gl_color_mask` 只记录、不参与状态~~ → **已修复**：`ToBgfxState()` 现在按
+  `state.colorWrite` 生成 `BGFX_STATE_WRITE_R/G/B/A`，mask 形状不会再被不透明地画出来；
 - bgfx v167 的 32 位 stencil 字里**没有 write-mask 字段**，`lime_gl_stencil_mask` 的写掩码目前无法下发
   （会影响嵌套 mask，需要在 Metal 侧另做或接受限制）；
 - 还需要一个真正使用 `.mask` 的场景做回归验证。
 
-**TODO（中工作量）**：
+**剩余 TODO**：
 
-1. `ToBgfxState()` 用 `state.colorWrite` 生成 `BGFX_STATE_WRITE_R/G/B/A`；
-2. 评估 stencil write-mask：要么接受限制，要么在 Metal 层自行维护帧内 mask 栈；
-3. 用一个使用 `.mask` 的最小场景验证（OpenFL mask 会先画 mask 形状再画内容）；
-4. 顺带验证 `lime_gl_stencil_op_separate` 与 back-face 参数。
+1. 评估 stencil write-mask：要么接受限制，要么在 Metal 层自行维护帧内 mask 栈；
+2. 用一个使用 `.mask` 的最小场景验证（OpenFL mask 会先画 mask 形状再画内容）；
+3. 顺带验证 `lime_gl_stencil_op_separate` 与 back-face 参数。
 
 验收：自建 `Sprite.mask` 场景，遮罩生效且 mask 形状不可见；正常游戏画面无回归。
 
@@ -120,18 +119,18 @@
 
 | 项 | 现状 | 位置 |
 | --- | --- | --- |
-| `glBlendEquation(Separate)` | 只记录，`ToBgfxState` 固定 ADD | `MetalBindings.cpp:6591-6605` |
+| `glBlendEquation(Separate)` | ✅ 已映射到 `BGFX_STATE_BLEND_EQUATION_SEPARATE`（ADD/SUB/REVSUB/MIN/MAX） | `MetalBindings.cpp ToBgfxState` |
+| `glDepthFunc` | ✅ 已映射到 `BGFX_STATE_DEPTH_TEST_*`（仅背缓冲仍按原策略忽略深度） | 同上 |
+| `glFrontFace` | ✅ 记录并按 winding 参与 cull 判定 | `MetalContext.h state.frontFace` |
+| `glCullFace(mode)` | ✅ 按 FRONT/BACK + winding 选择 `CULL_CW/CULL_CCW` | `ToBgfxCull()` |
+| `glColorMask` | ✅ 映射为 `BGFX_STATE_WRITE_R/G/B/A`（同时修好 mask 形状可见问题） | `ToBgfxState` |
 | `glBlendColor` | 空实现（bgfx 状态无该项） | `:6607` |
-| `glDepthFunc` | 空实现，仅背缓冲用固定 LEQUAL | `:6624` |
 | `glDepthRangef` | 空实现 | `:6638` |
-| `glFrontFace` | 空实现 | `MetalStates.inc` |
-| `glCullFace(mode)` | 只记录；enable 时固定 `CULL_CW` | `MetalBindings.cpp:6645+`/`ToBgfxState` |
-| `glColorMask` | 只记录，未参与状态（同 3.1） | `:6614` |
 | `glPolygonOffset` | 空实现（bgfx 状态无 depth-bias） | `MetalStates.inc` |
 | `glLineWidth` | 忽略（Metal 1px） | `MetalStates.inc` |
 | `glSampleCoverage` / MSAA | 未启用 MSAA，恒满覆盖 | `MetalStates.inc:1042,1105` |
 
-建议：随 1.1（native 后端）一起实现；若短期要支持 3D/mod 混合模式，至少补 blend equation 与 cull mode。
+剩余项建议随 1.1（native 后端）或确有 3D/mod 需求时再补。
 
 ---
 

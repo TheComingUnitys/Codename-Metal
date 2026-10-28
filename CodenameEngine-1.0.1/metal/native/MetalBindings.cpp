@@ -1013,9 +1013,51 @@ namespace lime {
 			}
 		}
 
+		uint64_t ToBgfxDepthFunc (int glFunc)
+		{
+			switch (glFunc)
+			{
+				case 0x0200: return BGFX_STATE_DEPTH_TEST_NEVER;
+				case 0x0201: return BGFX_STATE_DEPTH_TEST_LESS;
+				case 0x0202: return BGFX_STATE_DEPTH_TEST_EQUAL;
+				case 0x0204: return BGFX_STATE_DEPTH_TEST_GREATER;
+				case 0x0205: return BGFX_STATE_DEPTH_TEST_NOTEQUAL;
+				case 0x0206: return BGFX_STATE_DEPTH_TEST_GEQUAL;
+				case 0x0207: return BGFX_STATE_DEPTH_TEST_ALWAYS;
+				default:     return BGFX_STATE_DEPTH_TEST_LEQUAL;
+			}
+		}
+
+		uint64_t ToBgfxBlendEq (int glEq)
+		{
+			switch (glEq)
+			{
+				case 0x800A: return BGFX_STATE_BLEND_EQUATION_SUB;    // GL_FUNC_SUBTRACT
+				case 0x800B: return BGFX_STATE_BLEND_EQUATION_REVSUB; // GL_FUNC_REVERSE_SUBTRACT
+				case 0x8007: return BGFX_STATE_BLEND_EQUATION_MIN;    // GL_MIN
+				case 0x8008: return BGFX_STATE_BLEND_EQUATION_MAX;    // GL_MAX
+				default:     return BGFX_STATE_BLEND_EQUATION_ADD;    // GL_FUNC_ADD
+			}
+		}
+
+		/** GL cull mode + front-face winding -> bgfx CULL_CW / CULL_CCW. */
+		uint64_t ToBgfxCull (int glMode, int glFrontFace)
+		{
+			const bool frontIsCcw = (glFrontFace != 0x0900);   // GL_CCW (0x0901) is the default
+			const bool cullFront = (glMode == 0x0404);          // GL_FRONT
+			const bool cullCw = frontIsCcw ? !cullFront : cullFront;
+			return cullCw ? BGFX_STATE_CULL_CW : BGFX_STATE_CULL_CCW;
+		}
+
 		long ToBgfxState ()
 		{
-			long state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
+			// glColorMask -> bgfx write bits.  OpenFL's 2D mask support turns colour writes
+			// off while it draws the mask shape, so ignoring this made the mask shape visible.
+			long state = 0;
+			if (MetalContext::state.colorWrite[0]) state |= BGFX_STATE_WRITE_R;
+			if (MetalContext::state.colorWrite[1]) state |= BGFX_STATE_WRITE_G;
+			if (MetalContext::state.colorWrite[2]) state |= BGFX_STATE_WRITE_B;
+			if (MetalContext::state.colorWrite[3]) state |= BGFX_STATE_WRITE_A;
 
 			// 2D offscreen passes do not need depth, and the game never clears anything (there is
 			// no glClear call at all), so a depth attachment starts out with uninitialised values
@@ -1023,7 +1065,7 @@ namespace lime {
 			// framebuffer but never appeared.  Ignore depth while rendering offscreen.
 			if (MetalContext::state.depthTest && MetalContext::state.currentFramebuffer == 0)
 			{
-				state |= BGFX_STATE_DEPTH_TEST_LEQUAL;
+				state |= ToBgfxDepthFunc (MetalContext::state.depthFunc);
 			}
 
 			if (MetalContext::state.depthWrite)
@@ -1048,11 +1090,14 @@ namespace lime {
 					ToBgfxBlend (MetalContext::state.blendDstRGB),
 					ToBgfxBlend (MetalContext::state.blendSrcAlpha),
 					ToBgfxBlend (MetalContext::state.blendDstAlpha));
+				state |= BGFX_STATE_BLEND_EQUATION_SEPARATE (
+					ToBgfxBlendEq (MetalContext::state.blendEqRGB),
+					ToBgfxBlendEq (MetalContext::state.blendEqAlpha));
 			}
 
 			if (MetalContext::state.cullFace)
 			{
-				state |= BGFX_STATE_CULL_CW;
+				state |= ToBgfxCull (MetalContext::state.cullFaceMode, MetalContext::state.frontFace);
 			}
 
 			return state;
@@ -6766,7 +6811,7 @@ namespace lime {
 	void lime_gl_depth_func (int func)
 	{
 		CNE_COV ("lime_gl_depth_func");
-		(void)func;   // bgfx has a fixed set of depth functions; LEQUAL is the OpenFL default
+		MetalContext::state.depthFunc = func;
 	}
 
 	//@impl lime_gl_depth_mask
@@ -6787,14 +6832,14 @@ namespace lime {
 	void lime_gl_cull_face (int mode)
 	{
 		CNE_COV ("lime_gl_cull_face");
-		(void)mode;
+		MetalContext::state.cullFaceMode = mode;
 	}
 
 	//@impl lime_gl_front_face
 	void lime_gl_front_face (int face)
 	{
 		CNE_COV ("lime_gl_front_face");
-		(void)face;
+		MetalContext::state.frontFace = face;
 	}
 
 	//@impl lime_gl_viewport
