@@ -22,9 +22,9 @@ Sources enumerated from:
 | unique source keys | 116 |
 | vertex / fragment | 16 / 100 |
 | cache fingerprint | `1E2E05CC0B0C4AE0` |
-| total MSL bytes | 537793 |
-| **AOT .metallib stages** | **108 / 116** |
-| **AOT .metallib bytes** | **944100** |
+| total MSL bytes | 537773 |
+| **AOT .metallib stages** | **109 / 116** |
+| **AOT .metallib bytes** | **950404** |
 | .metallib build environment | `Apple M3|apple7+|Version 26.6.2 (Build 25G83)` |
 
 ## Every entry
@@ -79,7 +79,7 @@ Sources enumerated from:
 | 46 | `class:openfl.filters.CombineShader#0/fragment` | fragment | `A061C60611217DA0` | `6C4748384EC17C2A` | 1790 | 5548 | 0 | 0 | 2 |
 | 47 | `class:openfl.filters.ConvolutionShader#0/fragment` | fragment | `E4E1B94DCE4B6007` | `0A74AE38D5FBEFCE` | 2965 | 7788 | 4 | 0 | 1 |
 | 48 | `class:openfl.filters.ConvolutionShader#0/vertex` | vertex | `5BC65EF33589DAAD` | `7CFA96BBA0C4F8C7` | 2273 | 6588 | 2 | 2 | 0 |
-| 49 | `class:openfl.filters.DisplacementMapShader#0/fragment` | fragment | `B0B3CEBD9CCE4A0F` | `974FB882595A5FAC` | 2153 | - | 3 | 0 | 2 |
+| 49 | `class:openfl.filters.DisplacementMapShader#0/fragment` | fragment | `B0B3CEBD9CCE4A0F` | `974FB882595A5FAC` | 2149 | 6304 | 3 | 0 | 2 |
 | 50 | `class:openfl.filters.DisplacementMapShader#0/vertex` | vertex | `4712BFF9B5EC7191` | `BDC74CB305F92D31` | 1767 | 5348 | 2 | 2 | 0 |
 | 51 | `class:openfl.filters.HideShader#0/fragment` | fragment | `C702CDE92BA8D7C9` | `1F8EDFA9FADE53E9` | 1666 | 5460 | 0 | 0 | 2 |
 | 52 | `class:openfl.filters.HideShader#0/vertex` | vertex | `3E653B1A90EB3BAC` | `42D2F7C152F01F6F` | 1725 | 5248 | 3 | 2 | 0 |
@@ -96,7 +96,7 @@ Sources enumerated from:
 | 63 | `mod:mods/dustin-mod-master/shaders/bloom_new/fragment` | fragment | `A8A2C712DAFD25E0` | `227B2230051BB8FC` | 5401 | 9452 | 10 | 0 | 1 |
 | 64 | `mod:mods/dustin-mod-master/shaders/blue/fragment` | fragment | `68EDC0305A89871C` | `BAEB597D53304557` | 8227 | 14452 | 17 | 0 | 1 |
 | 65 | `mod:mods/dustin-mod-master/shaders/br_cine/fragment` | fragment | `33F34123FDD0951B` | `7299DCC6DC3E1998` | 4193 | 6976 | 6 | 0 | 1 |
-| 66 | `mod:mods/dustin-mod-master/shaders/cable/fragment` | fragment | `357609C9B329A877` | `271AE7BFE578D64B` | 7312 | - | 8 | 0 | 1 |
+| 66 | `mod:mods/dustin-mod-master/shaders/cable/fragment` | fragment | `357609C9B329A877` | `271AE7BFE578D64B` | 7300 | - | 8 | 0 | 1 |
 | 67 | `mod:mods/dustin-mod-master/shaders/chromaticWarp/fragment` | fragment | `857E1EADAFE1F425` | `48C77207F58760AB` | 5520 | 10820 | 6 | 0 | 1 |
 | 68 | `mod:mods/dustin-mod-master/shaders/coloredVignette/fragment` | fragment | `C680CA91F17DB975` | `3BABD0AEE16D4250` | 5148 | 9292 | 9 | 0 | 1 |
 | 69 | `mod:mods/dustin-mod-master/shaders/coloredVignette_clip/fragment` | fragment | `B88CC30CFF1B6582` | `0FE963DFA76A7AAB` | 4738 | 8784 | 8 | 0 | 1 |
@@ -137,7 +137,7 @@ Sources enumerated from:
 | 104 | `mod:mods/dustin-mod-master/shaders/shadowProcess/fragment` | fragment | `3D7DFF1FF98A79AB` | `25358F7EEF65E618` | 6914 | 12088 | 15 | 0 | 1 |
 | 105 | `mod:mods/dustin-mod-master/shaders/snow/fragment` | fragment | `8CA759125D3ACF1C` | `DFB532757E40D85D` | 8851 | 15388 | 19 | 0 | 1 |
 | 106 | `mod:mods/dustin-mod-master/shaders/static/fragment` | fragment | `BA6915B0F50D02CE` | `1581184BB59EA947` | 4460 | 7528 | 7 | 0 | 1 |
-| 107 | `mod:mods/dustin-mod-master/shaders/static2/fragment` | fragment | `66D4FDD30B254909` | `9F0002262FC8E5CC` | 4788 | 7772 | 7 | 0 | 1 |
+| 107 | `mod:mods/dustin-mod-master/shaders/static2/fragment` | fragment | `66D4FDD30B254909` | `9F0002262FC8E5CC` | 4784 | 7772 | 7 | 0 | 1 |
 | 108 | `mod:mods/dustin-mod-master/shaders/tapenoise/fragment` | fragment | `82BE44AA9CAE94DC` | `DB00D36C0BC834F0` | 5714 | 9928 | 8 | 0 | 1 |
 | 109 | `mod:mods/dustin-mod-master/shaders/vhs/fragment` | fragment | `AD686F2243F63CC6` | `A56BFB6216437A3E` | 21365 | 65816 | 16 | 0 | 1 |
 | 110 | `mod:mods/dustin-mod-master/shaders/vig/fragment` | fragment | `F356723F0436FB69` | `4522A41C8D12CCD8` | 4427 | 7660 | 8 | 0 | 1 |

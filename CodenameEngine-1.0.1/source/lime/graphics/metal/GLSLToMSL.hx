@@ -90,6 +90,9 @@ class GLSLToMSL
 	var attributes:Array<AttrInfo> = [];
 	var varyings:Array<{name:String, glslType:String, mslType:String, arrayLen:Int}> = [];
 	var varyingNames = new Map<String, Bool> ();
+	// Local/parameter types, collected with a light pre-pass.  Needed for GLSL's
+	// truncating vector constructors such as `vec2(result)` where result is vec4.
+	var localTypes = new StringMap<String> ();
 	var uniforms:Array<UniformInfo> = [];
 	var samplers:Array<SamplerInfo> = [];
 	var uniformSize:Int = 0;
@@ -140,12 +143,100 @@ class GLSLToMSL
 		}
 		return out;
 	}
+	/**
+		GLSL array constructors (`float[N](a, b, ...)`, used by mod shaders such as
+		cable.frag for filter-kernel tables) have no MSL equivalent with that spelling.
+		Rewrite `= float[N]( ... )` into `= { ... }`; the matching `)` becomes `}`.
+	**/
+	static function convertArrayConstructors (toks:Array<Token>):Void
+	{
+		var i = 0;
+		while (i < toks.length)
+		{
+			var t = toks[i];
+			if (t.kind != Ident || !isBasicType (t.text))
+			{
+				i++;
+				continue;
+			}
+
+			var prev = previousSignificant (toks, i);
+			if (prev < 0 || toks[prev].kind != Punct || toks[prev].text != '=')
+			{
+				i++;
+				continue;
+			}
+
+			var open = nextSignificant (toks, i);
+			if (open < 0 || toks[open].kind != Punct || toks[open].text != '[')
+			{
+				i++;
+				continue;
+			}
+
+			var close = matchDelim (toks, open, '[', ']');
+			if (close < 0)
+			{
+				i++;
+				continue;
+			}
+
+			var paren = nextSignificant (toks, close);
+			if (paren < 0 || toks[paren].kind != Punct || toks[paren].text != '(')
+			{
+				i++;
+				continue;
+			}
+
+			var closeP = matchDelim (toks, paren, '(', ')');
+			if (closeP < 0)
+			{
+				i++;
+				continue;
+			}
+
+			t.kind = Punct;
+			t.text = '{';
+			for (k in i + 1...paren + 1)
+			{
+				toks[k].kind = Ident;
+				toks[k].text = '';
+			}
+			toks[closeP].kind = Punct;
+			toks[closeP].text = '}';
+			i = closeP + 1;
+		}
+	}
+
+	/** Records declared identifier types (locals, parameters and globals) so the emitter
+	    can translate GLSL's truncating vector constructors (\`vec2(vec4expr)\`).
+	**/
+	static function collectDeclaredTypes (toks:Array<Token>, into:StringMap<String>):Void
+	{
+		var i = 0;
+		while (i < toks.length)
+		{
+			var t = toks[i];
+			if (t.kind == Ident && isBasicType (t.text))
+			{
+				var n = nextSignificant (toks, i);
+				if (n >= 0 && toks[n].kind == Ident && toks[n].text.length > 0)
+				{
+					into.set (toks[n].text, t.text);
+				}
+			}
+			i++;
+		}
+	}
+
 	function run(rawSource:String):TranslateResult
 	{
 		var text = Preprocessor.run(rawSource, errors);
 		var toks = stripParameterQualifiers (Lexer.lex(text));
 		collect(toks);
 		renameShadowedParameters(toks);
+		convertArrayConstructors(toks);
+		collectDeclaredTypes(toks, localTypes);
 		var body = emit(toks);
 		var code = assemble(body);
 
@@ -209,6 +300,23 @@ class GLSLToMSL
 			case 'sampler2DShadow': 'depth2d<float>';
 			default: 'texture2d<float>';
 		};
+	}
+
+	/** Component count of a GLSL vector type (0 when unknown). */
+	static function vectorComponents (t:String):Int
+	{
+		return switch (t)
+		{
+			case 'vec2', 'ivec2', 'bvec2': 2;
+			case 'vec3', 'ivec3', 'bvec3': 3;
+			case 'vec4', 'ivec4', 'bvec4': 4;
+			default: 0;
+		};
+	}
+
+	static function swizzleFor (n:Int):String
+	{
+		return (n == 2) ? 'xy' : ((n == 3) ? 'xyz' : 'xyzw');
 	}
 
 	static function isBasicType(t:String):Bool
@@ -772,6 +880,35 @@ class GLSLToMSL
 					out.add(symbols.get(t.text));
 					i++;
 					continue;
+				}
+
+				// GLSL allows truncating vector constructors: `vec2(vec4value)`.  MSL has no
+				// such constructor, so emit the equivalent swizzle when the argument type is
+				// known (OpenFL's DisplacementMapShader hits this).
+				if (isBasicType (t.text))
+				{
+					var target = vectorComponents (t.text);
+					var p1 = nextSignificant (toks, i);
+					if (target > 0 && p1 >= 0 && toks[p1].kind == Punct && toks[p1].text == '(')
+					{
+						var a1 = nextSignificant (toks, p1);
+						var a2 = (a1 >= 0) ? nextSignificant (toks, a1) : -1;
+						if (a1 >= 0 && a2 >= 0 && toks[a1].kind == Ident
+						&&  toks[a2].kind == Punct && toks[a2].text == ')'
+						&&  localTypes.exists (toks[a1].text))
+						{
+							var argType = localTypes.get (toks[a1].text);
+							if (vectorComponents (argType) > target)
+							{
+								var arg = symbols.exists (toks[a1].text)
+									? symbols.get (toks[a1].text)
+									: toks[a1].text;
+								out.add ('(' + arg + ').' + swizzleFor (target));
+								i = a2 + 1;
+								continue;
+							}
+						}
+					}
 				}
 
 				emitIdent(t, out);
@@ -1538,6 +1675,7 @@ class GLSLToMSL
 		finalOut = injectFunctionPrototypes(finalOut);
 		finalOut = rewriteSwizzleCompoundAssignments(finalOut);
 		finalOut = rewriteArrayVaryingAccess(finalOut);
+		finalOut = rewriteTruncatingConstructors(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1737,6 +1875,37 @@ class GLSLToMSL
 
 					out = out.substring (0, at) + head + '_' + Std.string (idx) + out.substring (close + 1);
 					search = at + head.length;
+				}
+			}
+		}
+		return out;
+	}
+
+	/**
+		Final safety net for GLSL truncating constructors that appear inside a texture call
+		(emitTextureCall builds its coordinate from raw tokens, bypassing emit()):
+		`float2 (vec4var )` becomes `(vec4var ).xy` for every declared local/parameter of a
+		wider vector type.
+	**/
+	function rewriteTruncatingConstructors (code:String):String
+	{
+		var out = code;
+		for (name in localTypes.keys ())
+		{
+			var comps = vectorComponents (localTypes.get (name));
+			if (comps <= 2) continue;
+			for (target in [2, 3])
+			{
+				if (comps <= target) continue;
+				var re = new EReg ('float' + Std.string (target) + '\\s*\\(\\s*' + name + '\\s*\\)', 'g');
+				var search = 0;
+				while (true)
+				{
+					if (!re.match (out.substr (search))) break;
+					var m = re.matchedPos ();
+					var at = search + m.pos;
+					out = out.substring (0, at) + '(' + name + ').' + swizzleFor (target) + out.substring (at + m.len);
+					search = at + name.length + 3;
 				}
 			}
 		}
