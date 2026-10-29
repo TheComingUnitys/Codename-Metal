@@ -1740,17 +1740,16 @@ namespace lime {
 				// stage out of view and blacked out Senpai/Roses).
 				static const int rtUvFlipMode = [] ()
 				{
-					// Default 2: flip the V coordinate of draws that sample a render target and
-					// paint to the screen (mode 2).  The flip is applied only when the sampled
-					// target was *not* rendered through the matrix mirror (see renderFlipped), so
-					// engine passes keep their previous orientation while mod-owned canvases
-					// whose content was never mirrored stop coming out upside down.
-					// CNE_METAL_RT_UVFLIP=0 disables it.  Default 0: the matrix-mirror path already
-					// produces the orientation the sampler expects for both engine and mod passes;
-					// flipping every render target's V inverted most of Dusttale (cutscene, chart
-					// select, Boyfriend) while leaving the opponent correct.
+					// Default 4 (verified with the Dustin mod in windowed *and* fullscreen):
+					// flip V for draws that sample a render target through a quad whose own matrix
+					// already encodes a Y flip (positive m5) - OpenFL's filter/composite quads.
+					// The old default (0, only extra-camera screen composites flips) left the
+					// menu/HUD canvases upside down after switching to macOS fullscreen.
+					// Modes: 0 none/extra-camera only, 1 into-FBO, 2 screen-only, 3 every RT
+					// sampling (faithful GL, needs FBO_FLIP=0), 4 filter quads (default).
+					// CNE_METAL_RT_UVFLIP=0/1/2/3 override for A/B testing.
 					const char* v = std::getenv ("CNE_METAL_RT_UVFLIP");
-					return (v != nullptr) ? std::atoi (v) : 0;
+					return (v != nullptr) ? std::atoi (v) : 4;
 				} ();
 				int texCoordGlLoc = -1;
 				// [cne-uvflip] Screen draws that sample an offscreen texture read it vertically

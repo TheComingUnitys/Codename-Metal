@@ -163,6 +163,15 @@ else
 	echo "  [3b/6] SDLWindow.cpp already patched (or not found)"
 fi
 
+# ---------------------------------------------------------------- 3b2. menu pump
+# AppKit's window-tiling hover menu over the green button runs a nested event-tracking loop;
+# SDL_WaitEvent() does not return while it is open.  The patch exposes a direct
+# UPDATE+RENDER pump that MetalLayerHost.mm calls from an NSRunLoopCommonModes timer.
+if [ -f "$HERE/patch_lime_menu_pump.py" ]; then
+	python3 "$HERE/patch_lime_menu_pump.py" --lime "$LIME_DIR" || {
+		echo "error: patch_lime_menu_pump.py failed" >&2; exit 1; }
+fi
+
 # ---------------------------------------------------------------- 3c. Haxe hooks
 
 # `patch_lime_haxe.py` wires Lime's GL entry points to the GLSL->MSL translator

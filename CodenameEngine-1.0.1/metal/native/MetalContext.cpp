@@ -14,6 +14,7 @@
 extern "C" void cne_mtl_install_probe (void);
 extern "C" void cne_mtl_note_bgfx_init_boundary (void);
 extern "C" int cne_mtl_bgfx_internal_source_compiles (void);
+extern "C" void lime_install_menu_tracking_pump (void);
 
 namespace
 {
@@ -847,6 +848,10 @@ namespace metal {
 		}
 
 		created = true;
+
+		#if defined(LIME_SDL) && defined(HX_MACOS)
+		lime_install_menu_tracking_pump ();
+		#endif
 
 		std::fprintf (stdout, "[cne-metal] bgfx renderer: %s (Metal: %s), %dx%d%s\n",
 			bgfx::getRendererName (bgfx::getRendererType ()),

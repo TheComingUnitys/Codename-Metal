@@ -21,7 +21,40 @@
 
 #include <cstdio>
 
+#if defined(LIME_SDL) && defined(HX_MACOS)
+// The Lime patch adds PumpDuringMenuTracking(); see metal/scripts/patch_lime_menu_pump.py.
+#include "../../backend/sdl/SDLApplication.h"
+#endif
+
 extern "C" {
+
+#if defined(LIME_SDL) && defined(HX_MACOS)
+	// CNE_METAL_MENU_PUMP: AppKit runs the window menu over the green button in a nested
+	// event-tracking run loop, so SDL_WaitEvent() in the game loop does not return and the
+	// picture freezes (audio keeps playing).  The timer fires in NSRunLoopCommonModes (which
+	// AppKit services during menu tracking) and asks Lime's SDLApplication to dispatch one
+	// UPDATE+RENDER directly - the SDL event queue is not touched, avoiding re-entrancy.
+	void lime_install_menu_tracking_pump (void)
+	{
+		static NSTimer* pumpTimer = nil;
+		if (pumpTimer != nil) return;
+
+		pumpTimer = [NSTimer timerWithTimeInterval:(1.0 / 60.0)
+			repeats:YES
+			block:^(NSTimer* timer)
+			{
+				(void)timer;
+				NSString* mode = [[NSRunLoop currentRunLoop] currentMode];
+				if (mode == nil) return;
+				if ([mode isEqualToString:NSEventTrackingRunLoopMode]
+				||  [mode isEqualToString:NSModalPanelRunLoopMode])
+				{
+					lime::SDLApplication::PumpDuringMenuTracking ();
+				}
+			}];
+		[[NSRunLoop mainRunLoop] addTimer:pumpTimer forMode:NSRunLoopCommonModes];
+	}
+#endif
 
 	/// Installs a CAMetalLayer on a fresh NSView subview of `nsWindow`'s content view.
 	/// Returns the layer, or NULL on failure.
@@ -34,6 +67,14 @@ extern "C" {
 			NSWindow* window = (__bridge NSWindow*)nsWindow;
 			NSView* contentView = [window contentView];
 			if (contentView == nil) return NULL;
+
+			// [cne-zoombutton] macOS 26 shows a window-tiling hover menu ("Move & Resize",
+			// "Fill & Arrange", "Full Screen") over the green zoom button.  AppKit runs that
+			// menu in a nested event-tracking run loop, so SDL_WaitEvent() in the game loop
+			// never returns: the picture freezes while the audio thread keeps playing.
+			// The green button stays visible/usable; a timer installed below keeps dispatching
+			// UPDATE/RENDER while AppKit tracks the menu (see MetalLayerHost.mm).
+			window.collectionBehavior = window.collectionBehavior | NSWindowCollectionBehaviorFullScreenDisallowsTiling;
 
 			NSRect bounds = [contentView bounds];
 			if (width > 0.0 && height > 0.0)
