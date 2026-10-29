@@ -1,266 +1,169 @@
-# TODO — Metal 渲染后端剩余工作汇总
+# Metal 后端 TODO（仅保留未完成项）
 
-> 生成时间：2026-10-28（基于当前 `CodenameEngine-1.0.1/` 工作树与 `metal/audit/*` 审计文档复核）
-> 范围：`CodenameEngine-1.0.1/metal/`（native + haxe + scripts）、`source/` 中与渲染相关的改动、以及仍然走非 Metal 路径的子系统。
-> 结论先行：**CNE 1.0.1 的 2D 渲染（菜单/游戏内/滤镜/视频画面）已全部经 bgfx → Metal 提交，没有 GL context**；
-> 剩余缺口集中在四块：①架构上仍是"GL 形状 API 仿真"；②着色器 AOT 未 100%；③少数 2D 条件功能（mask、readPixels）与全部 3D 能力；④诊断/测试工程债。
+> 本文件**只列尚未完成的工作**。已修复项、验证基线与调试历史不再保留：
+> 见 `git log`、`CodenameEngine-1.0.1/metal/README.md`（开发日志）。
+> 诊断/测试：`docs/DIAGNOSTICS.md`、`metal/autotests/README.md`；一键验证：`./verify.sh`。
 
----
+## 0. 当前基线（自动校验，勿手改）
 
-## 0. 已完成基线（对照用，不必再做）
+数字由 `metal/scripts/check-docs.py` 对照缓存校验；`.metallib` 覆盖由
+`gen_shader_aot.py --strict` 对照 `metal/audit/aot-expected.json` 校验。
 
-| 项 | 状态 | 证据 |
-| --- | --- | --- |
-| 全部 269 个 `lime_gl_*` 入口有实现（符号级） | ✅ | `metal/native/MetalBindingsStatus.txt` |
-| 2D 渲染全部经 `lime_gl_draw_elements → SubmitDraw → bgfx::submit` | ✅ | `metal/audit/paths.md`、`primitives.md` §1.5（submit 计数 == glDrawElements 计数） |
-| 无 GL context / 无 GL 交换链 | ✅ | `metal/scripts/audit-render-paths.sh`；`SDL_WINDOW_OPENGL` 计数 0 |
-| 着色器为构建期 GLSL→MSL，运行时零翻译（可枚举的 shader） | ✅ 116 stage 入缓存 | `ShaderAotCache.hx` `COUNT=116` |
-| Dusttale 黑屏 / shader 编译失败 / 方向 / 菜单卡顿 | ✅ 已修 | `CodenameEngine-1.0.1/metal/README.md`（开发日志） |
-| FBO/滤镜/额外相机/视频画面 | ✅ 已跑通 | 2026-10-28 实机验证（主菜单/Cutscene/选谱/Dusttale/WH） |
+| 项 | 数值 |
+| --- | --- |
+| 缓存 stage 总数 | 116（16 vertex / 100 fragment） |
+| 已预编译 `.metallib` | **113 / 116** |
+| 构建期 GLSL→MSL 翻译失败 | **3 个 stage** |
 
 ---
 
-## 1. P0 — 架构层：OpenFL 仍在用"GL 形状 API"，由 C++ 仿真 GL 状态机
+## 1. P0 — 架构层：仍是「GL 形状 API + C++ 状态机仿真」
 
-这是**最大的一项"没有完全交给 Metal"**：画面是 Metal 渲染的，但 Haxe 侧仍然走 OpenGL ES 的调用形状
-（`lime_gl_*` CFFI，实测 ≈806 次 CFFI/帧），由我们在 C++ 里把 GL 状态机/语义逐条翻译成 bgfx 状态。
-
-| 子项 | 现状 | 工作量/风险 | 参考 |
+| 子项 | 现状 | 工作量 | 参考 |
 | --- | --- | --- | --- |
-| 1.1 Metal-native `Context3D` 后端（消除 `lime_gl_*` ABI 与 GL 状态仿真） | 未开始；方案 B 已论证 | 2–3 天（Phase 0–2），回归面可控 | `metal/audit/openfl-native.md` §3–§4 |
-| 1.2 去掉 bgfx，直连 Metal 提交 | 未开始；已有"同帧 A/B 直连 Metal 回放"原型（逐像素一致） | 1–2 天，收益/风险待评估 | `openfl-native.md` §5.4、`metal/tools/native_replay/` |
-| 1.3 lime Haxe 补丁（14 处）需上游化/长期维护 | 本机 `~/haxelib-dev/lime-832` 打补丁；脚本幂等 | 中（跟随 lime 升级） | `metal/scripts/patch_lime_haxe.py`、`README.md` §425 |
-| 1.4 GL 语义仿真代码（view/scissor Y 翻转、FBO 附件缓存、常量属性物化、格式猜测、矩阵镜像补偿） | 全部为"GL→bgfx 适配层"，随 1.1/1.2 才能删 | 随 1.1/1.2 | `MetalBindings.cpp`、`MetalNative.inc` |
-
-> 注：当前"方向/镜像"逻辑（`ApplyLateMatrixFlip`）是 GL 语义适配的一部分；1.1 落地后应整块删除。
+| 1.1 Metal-native `Context3D`（消除 `lime_gl_*` 与 GL 状态仿真） | 未开始（方案 B 已论证） | 2–3 天 | `metal/audit/openfl-native.md` §3–§4 |
+| 1.2 去掉 bgfx，直连 Metal 提交 | 未开始；已有同帧 A/B 直连回放原型（逐像素一致） | 1–2 天，收益待评估 | `openfl-native.md` §5.4、`metal/tools/native_replay/` |
+| 1.3 lime Haxe 补丁上游化/长期维护 | 本机 patch，脚本幂等 | 中（跟随 lime 升级） | `metal/scripts/patch_lime_haxe.py` |
+| 1.4 GL 语义适配层（Y 翻转、FBO 附件缓存、格式猜测、矩阵镜像补偿） | 只能随 1.1/1.2 删除 | 随 1.1/1.2 | `MetalBindings.cpp`、`MetalNative.inc` |
 
 ---
 
-## 2. P0 — 着色器 AOT 未 100%（仍有运行时翻译 / 运行时 MSL 编译）
+## 2. P0 — 着色器 AOT 未 100%
 
-数据来自 `gen_shader_aot.py` 最近一次生成（`/tmp/cne-aot-regen8.log`）与 `ShaderAotCache.hx`：
+### 2.1 构建期仍失败的 3 个 stage（均为 mod 源码问题，非引擎缺陷）
 
-| 项 | 数值 | 影响 |
-| --- | --- | --- |
-| 缓存 stage 总数 | 116（16 vertex / 100 fragment） | — |
-| 已预编译 `.metallib` | **113 / 116** | 其余 3 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
-| 构建期 GLSL→MSL 翻译失败 | **3 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
-
-### 2.1 构建期仍失败的 3 个 stage（按错误分类）
-
-| # | shader | 错误摘要 |
-| --- | --- | --- |
-| 1 | `mods/.../cable/fragment` | 依赖 `TWO_PHASE`/`THREE_PHASE` define，未定义时变量缺失（mod 源问题） |
-| 2 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
-| 3 | `mods/.../line/fragment` | `gl_FragColor = openfl_TextureCoordv`（vec4 = vec2，非法 GLSL 赋值） |
-
-
-> 已修复：`wi.fragment`（`_mtl_u` 重复参数）、`vhs.fragment`（swizzle 复合赋值）、
-> 3 个 OpenFL filter shader（`varying vec2 vBlurCoords[5]` 的数组 varying 支持）、
-> `DisplacementMapShader`（GLSL 截断构造 `vec2(vec4)` → `.xy`），以及翻译器增强：顶层 helper 前置声明、
-> 重复作用域参数折叠、GLSL 数组构造 `float[N](...)` → `{...}`。
-> 另修复 `glsl_length`（GLSL 的 `length(scalar)` 在 MSL 里二义）等内置函数；
-> 修复引擎源码 `source/funkin/backend/shaders/OverlayShader.hx` 的非法 GLSL
-> （`base:Vec3` 伪类型、vec4 重载调用参数不匹配），两个 OverlayShader stage 现已可编译。
-> 另修正 `assets/shaders/engine/editorWaveformsRainbow.frag`：`uniform ivec2 waveformSize` → `vec2`
-> （MSL 没有隐式 int→float 转换，且 Haxe 侧上传的本来就是浮点 [w,h]）。
-> 翻译器同时补上**标量/无长度 uniform 数组**支持（`uniform float a[N]`、`uniform float[] a`
-> → `float4 a[N]` 打包 + `_mtl_u.a[i].x` 访问重写）。
-
-**TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这些写法可翻译（每类约 1 处规则），
-目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
-
-### 2.2 `.metallib` 只有 113/116
-
-- 原因：本机只有 Command Line Tools，`metal/tools/CompileShaderAot.mm` 对部分 MSL 无法离线编译（日志 `cannot write .metallib`）；
-- TODO：逐条修 `cannot write .metallib` 的 MSL 生成（多为 `_mtl_u`/地址空间/模板辅助函数命名问题），
-  或引入完整 Xcode/离线 `xcrun metal` 流程；验收 = `metallib compiled : 116 / 116`。
-- 影响：3 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
-
-### 2.3 运行时翻译兜底仍然默认开启
-
-`metal/haxe/lime/graphics/metal/ShaderAot.hx:isRuntimeFallbackEnabled()` 默认 true。
-**TODO**：2.1 完成后把它改为默认 false（并保留 `CNE_METAL_AOT_RUNTIME_TRANSLATE=1` 仅供调试），
-这样"运行时不做任何 GLSL 翻译"才真正成立。
-
----
-
-## 3. P1 — 2D 条件功能缺口（一旦 mod 用到就会明显坏）
-
-### 3.1 `DisplayObject.mask`（stencil）未接线 —— 最高优先级功能缺口
-
-现状（已核实源码）：
-
-- 交换链和离屏 FBO **都有** `D24S8`（`MetalContext.cpp:702`、`MetalBindings.cpp:4393-4396`），硬件条件具备；
-- `lime_gl_stencil_func/op/mask` 写入 `msStencilFront/Back`（`MetalStates.inc:1125+`）；
-- `MetalStates.inc` 已有 `MsPackStencil/MsPackTest/MsPackOp*`，且 **`ApplyStencilState()` 已在
-  `SubmitDraw()` 中调用**（`MetalBindings.cpp:5992`）→ stencil test/op/ref 已真正下发；
-- ~~`lime_gl_color_mask` 只记录、不参与状态~~ → **已修复**：`ToBgfxState()` 现在按
-  `state.colorWrite` 生成 `BGFX_STATE_WRITE_R/G/B/A`，mask 形状不会再被不透明地画出来；
-- bgfx v167 的 32 位 stencil 字里**没有 write-mask 字段**，`lime_gl_stencil_mask` 的写掩码目前无法下发
-  （会影响嵌套 mask，需要在 Metal 侧另做或接受限制）；
-- 还需要一个真正使用 `.mask` 的场景做回归验证。
-
-**剩余 TODO**：
-
-1. 评估 stencil write-mask：要么接受限制，要么在 Metal 层自行维护帧内 mask 栈；
-2. 用一个使用 `.mask` 的最小场景验证（OpenFL mask 会先画 mask 形状再画内容）；
-3. 顺带验证 `lime_gl_stencil_op_separate` 与 back-face 参数。
-
-验收：自建 `Sprite.mask` 场景，遮罩生效且 mask 形状不可见；正常游戏画面无回归。
-
-### 3.2 `read_pixels` 空实现 —— 截图/读回类功能全黑
-
-- `lime_gl_read_pixels`（`MetalBindings.cpp:6895`）直接 `ReportUnimplemented` 返回；
-- `lime/_internal/backend/native/NativeWindow.hx:328 readPixels()` 走它 ⇒ `window.readPixels()` 全 0；
-- 受影响：游戏内截图、`BitmapData.draw(renderer)`、`Context3D.drawToBitmapData`、mod 自定义读回。
-
-**TODO（中工作量）**：实现延迟读回（`bgfx::readTexture`/Metal blit 到 shared buffer），
-语义上允许"晚 1–2 帧"（可在 `glReadPixels` 后阻塞到可用，或按 Lime 用法在下一帧回调）。
-验收：`window.readPixels()` 与屏幕内容逐像素一致；截图功能可用。
-
-### 3.3 其他 2D 相关状态语义缺失（低风险，但属"没完全交给 Metal"）
-
-| 项 | 现状 | 位置 |
-| --- | --- | --- |
-| `glBlendEquation(Separate)` | ✅ 已映射到 `BGFX_STATE_BLEND_EQUATION_SEPARATE`（ADD/SUB/REVSUB/MIN/MAX） | `MetalBindings.cpp ToBgfxState` |
-| `glDepthFunc` | ✅ 已映射到 `BGFX_STATE_DEPTH_TEST_*`（仅背缓冲仍按原策略忽略深度） | 同上 |
-| `glFrontFace` | ✅ 记录并按 winding 参与 cull 判定 | `MetalContext.h state.frontFace` |
-| `glCullFace(mode)` | ✅ 按 FRONT/BACK + winding 选择 `CULL_CW/CULL_CCW` | `ToBgfxCull()` |
-| `glColorMask` | ✅ 映射为 `BGFX_STATE_WRITE_R/G/B/A`（同时修好 mask 形状可见问题） | `ToBgfxState` |
-| `glBlendColor` | 空实现（bgfx 状态无该项） | `:6607` |
-| `glDepthRangef` | 空实现 | `:6638` |
-| `glPolygonOffset` | 空实现（bgfx 状态无 depth-bias） | `MetalStates.inc` |
-| `glLineWidth` | 忽略（Metal 1px） | `MetalStates.inc` |
-| `glSampleCoverage` / MSAA | 未启用 MSAA，恒满覆盖 | `MetalStates.inc:1042,1105` |
-
-剩余项建议随 1.1（native 后端）或确有 3D/mod 需求时再补。
-
----
-
-## 4. P1 — 3D / Stage3D 能力整体缺失（CNE 官方内容不用，mod 可能用）
-
-| 能力 | 现状 | 说明/位置 |
-| --- | --- | --- |
-| `GL_TEXTURE_3D` 上传/子上传/存储（含 compressed 3D） | 全部 `ReportUnimplemented` | `MetalTextures.inc`；`bind_texture` 只镜像 `GL_TEXTURE_2D` |
-| `glGenerateMipmap` | 静默空实现 | 3D mipfilter 才需要 |
-| `glDrawBuffers` / MRT | 报告不支持（view 0 单色附件） | `MetalStates.inc:1182` |
-| `glBlitFramebuffer` | 报告不支持（bgfx 需 BLIT_DST + 显式区域） | `MetalTextures.inc:791` |
-| `glCopyTexImage2D` / `glCopyTexSubImage2D/3D` | 报告不支持（bgfx 回读异步） | `MetalTextures.inc:926+` |
-| `glClearBuffer*` | 报告不支持（bgfx clear 是 view 作用域） | `MetalTextures.inc` |
-| Transform feedback 全家族 | 报告不支持（bgfx 无对应概念） | `MetalStates.inc` |
-| Uniform block 全家族 + `glBindBufferBase/Range` | 不支持（UBO 折进 `_mtl_u`） | `MetalUniforms.inc:610-634` |
-| Program/Shader binary | 不支持（bgfx 用 MSL 源） | `MetalStates.inc` |
-| Query 对象（occlusion/timer） | 恒 0 | `MetalStates.inc` |
-| `glVertexAttribDivisor`（instancing） | 不支持（bgfx 无 per-attribute divisor） | `MetalTextures.inc` |
-| `glFramebufferTextureLayer` | 只挂 layer 0（无 array texture） | `MetalTextures.inc` |
-| Indexed GL3 状态查询（`glGetIntegeri_v/64i_v`） | 恒 0 | `MetalUniforms.inc:622` |
-
-> 判断：CNE 2D 内容用不到；是否实现取决于"是否需要跑 away3d/Flx3DView/3D mod"。
-> 如果要做，Order 建议：3D 纹理上传 → 状态语义（§3.3）→ MRT/blit → 其余（TF/UBO 等成本高收益低）。
-
----
-
-## 5. P2 — 已知隐患（会静默出错，不一定立刻可见）
-
-| # | 隐患 | 现状/证据 | 建议 |
+| key | shader | 原因 | 处理建议 |
 | --- | --- | --- | --- |
-| 5.1 | ~~纹理格式回退导致越界读~~ **已修复** | `BytesPerPixel` 现在按真实分量数/打包类型计算；`GL_ALPHA/LUMINANCE/RED/RG/LA/RGB` 在上传前用 `ExpandToRgba` 在 CPU 展开为 RGBA8（`MetalNative.inc`），不再按 4 B/px 越界 `memcpy` | 已覆盖 8-bit 窄格式；未知格式仍走旧回退并保留告警 |
-| 5.2 | 离屏 view id 上限：每帧 0..199，超限后复用 199 | 单帧目标切换 >200 次才会触发；现在**超限时打印一次** `[cne-view] offscreen view limit ...` 警告，不再静默 | 仍可改为直连 Metal 视图/动态视图池 |
-| 5.3 | ~~renderbuffer 未真正接线~~ **已修复** | `renderbuffer_storage` 记录尺寸/格式；`EnsureFramebuffer` 优先使用已绑定的 renderbuffer 作为 D24S8 深度/模板附件；resize/删除时销毁并失效相关 FBO | 颜色 renderbuffer 附件仍未支持（OpenFL 2D 不用） |
-| 5.4 | ~~`get_integerv` 只有 2 个 pname~~ **已修复** | `lime_gl_get_integerv` 改为委托 `QueryIntegersGL`（`MetalUniforms.inc` 的 pname 表，与 `get_floatv/get_booleanv` 同源） | 未知 pname 仍返回 0，但常见 GL limit/state 查询已一致 |
-| 5.5 | 未注册的死代码：`lime_gl_clear_depth`、`lime_gl_blend_barrier`；`ViewForFramebuffer/nextFramebufferView` 无运行时调用 | 无害，增加审计噪音 | 清理或注明"proto only" |
+| `357609C9B329A877` | mod `cable.frag` | `chroma_phase` 只在 `TWO_PHASE`/`THREE_PHASE` 分支里定义，实际两者都未定义 | 上游补 define 或分支 |
+| `EFD80EB711B13CBD` | mod `firething.frag` | 调用了未定义的 `noise1()`（只有 `noise1_2`） | 上游修函数名 |
+| `B3064EBB937D8A8F` | mod `line.frag` | `gl_FragColor = vec2`（vec4 赋 vec2，非法 GLSL） | 上游改 `vec4(...)` |
+
+引擎侧已无已知翻译缺陷；新增失败会被 `--strict` 审计拦下。
+
+### 2.2 运行时翻译兜底仍默认开启
+
+`ShaderAot.isRuntimeFallbackEnabled()` 默认 true。待 §6 剩余兼容项收敛、且确认无未知 mod 依赖运行时翻译后，
+改为默认 false（保留 `CNE_METAL_AOT_RUNTIME_TRANSLATE=1` 仅供调试）。
+
+### 2.3 `.metallib` 100% 受 mod 源码阻塞
+
+2.1 三项修好之前无法达到 116/116；不要为了数字去改 mod 文件（引擎侧约束）。
 
 ---
 
-## 6. P2 — 翻译器兼容性：目前依赖"改 mod 源码"才能通过
+## 3. P1 — 2D 条件功能
 
-本轮为让 Dusttale 的 shader 被翻译，曾对 **mod 文件**做最小修补（用户已要求后续不要再改 mod）。
-要让"未修改的 mod"直接可用，需要把这些兼容规则做进 `GLSLToMSL`：
+### 3.1 `DisplayObject.mask`：引擎侧已完成，缺运行时验证
 
-| # | 需要支持的写法 | 状态 | 涉及文件（本轮临时修补） |
-| --- | --- | --- | --- |
-| 1 | 文件级全局变量（`float ns;`）→ 常量地址空间/静态量处理 | 部分（常量全局已加 `constant`） | mod `snow/blue/lab_dust/light/dust/waving.frag` |
-| 2 | 函数名遮蔽：局部变量 `float min/...` 与内置函数同名 | ✅ `renameShadowedParameters` | flxanimate `FilterShader`；mod `iconshader.frag` |
-| 3 | 函数式构造 `float(vec3)`、`int(...)` 等标量提取 | ✅ 已实现 + 单测 | mod `light_preprocess/heatlight/impact_frames*/...` |
-| 4 | `radians()` 等 OpenFL/GLSL 内置未映射函数 | ✅ `glsl_radians/degrees` + 单测 | mod `DropShadow/hue/adjustColor.frag` |
-| 5 | 前向声明/函数定义顺序（`noise1` 先用后定义）或自动补声明 | ✅ `injectFunctionPrototypes` + 单测（`firething` 仍缺函数定义本身） | mod `firething.frag` |
-| 6 | 非 const 引用绑定向量元素（`v.x` 传引用） | ✅ swizzle 复合赋值重写 + 单测 | mod `scaryGlitch/vhs`（另 2 个 3D/filter 也报同类） |
-| 7 | `mat4` 参数展开/构造（`saturation.frag`） | 待办 | mod `saturation.frag` |
-| 8 | 块注释预处理（已修），多行宏、`#version` 变体等边界继续补测试 | ✅ 块注释 + 函数式宏单测 | `Preprocessor.hx` |
+- 已接线：`bgfx::setStencil`（test/op/ref）、`colorMask → BGFX_STATE_WRITE_*`、renderbuffer 作 D24S8 模板附件；
+- 剩余：需要真正使用 `.mask` 的场景，构建 app 后实测（并纳入像素回归金帧）；
+- 已知限制：bgfx v167 的 stencil 字无 write-mask 字段，嵌套 mask 可能不精确（见 §5）。
 
-验收：用**未修改的** mod 目录 + `CNE_METAL_AOT_RUNTIME_TRANSLATE=0` 启动，日志无 `GLSL->MSL failed`，画面正常。
+### 3.2 `read_pixels` 未实现（截图/读回）
+
+`lime_gl_read_pixels` 仍是空实现，`window.readPixels()` 全 0；影响游戏内截图、
+`BitmapData.draw(renderer)`、`Context3D.drawToBitmapData`、mod 自定义读回。
+
+可行方向（按风险排序）：
+1. 屏幕（FBO 0）走自有 `CAMetalLayer`：present 前 blit 到 shared buffer，readPixels 等待上一帧完成
+   （1 帧延迟，截图可接受；需要 Metal 侧改动）；
+2. 离屏 FBO 走 `bgfx::read`（`BGFX_TEXTURE_READ_BACK` + 临时 RT + 帧边界同步）；
+3. 明确不支持的调用点报 `ReportUnimplemented`，避免静默全 0。
+
+验收：`window.readPixels()` 与屏幕逐像素一致；`BitmapData.draw` 产出正确图像。
+
+### 3.3 颜色 renderbuffer 附件未支持
+
+深度/模板 renderbuffer 已支持；把 renderbuffer 作为**颜色**附件（`fb.texture == 0`）仍不渲染。
+OpenFL 2D 不用；实现需为 renderbuffer 建 RT 纹理并接入 EnsureFramebuffer。
+
+### 3.4 嵌套 mask（stencil write-mask）
+
+bgfx v167 的 32 位 stencil 字没有 write-mask；`lime_gl_stencil_mask` 无法下发。
+可选：Metal 层自行维护帧内 mask 栈，或接受限制并在文档标注。
 
 ---
 
-## 7. P3 — 工程债：诊断/测试设施
+## 4. P1 — 3D / Stage3D 能力缺失
 
-| 项 | 现状 | 建议 |
+CNE 官方 2D 内容不用；mod 若用 away3d/Flx3DView 会失败。
+
+| 能力 | 状态 |
+| --- | --- |
+| `GL_TEXTURE_3D` 上传/存储（含 compressed） | 未实现 |
+| `glGenerateMipmap` | 空实现（仅 3D mipfilter 需要） |
+| `glDrawBuffers` / MRT | 不支持（view 0 单色附件） |
+| `glBlitFramebuffer` / `glCopyTexImage2D` / `glCopyTexSubImage*` | 不支持（bgfx 回读异步） |
+| `glClearBuffer*` | 不支持（clear 是 view 作用域） |
+| Transform feedback 全家族 | 不支持（bgfx 无概念） |
+| Uniform block 全家族 + `glBindBufferBase/Range` | 不支持（UBO 折进 `_mtl_u`） |
+| Program/Shader binary | 不支持（bgfx 用 MSL 源） |
+| Query 对象（occlusion/timer） | 恒 0 |
+| `glVertexAttribDivisor`（instancing） | 不支持 |
+| `glFramebufferTextureLayer` | 只支持 layer 0 |
+| Indexed GL3 状态查询 | 恒 0 |
+
+实现顺序建议：3D 纹理 → 状态语义（§5）→ MRT/blit → 其余（TF/UBO 成本高）。
+
+---
+
+## 5. P2 — 其他状态语义/隐患
+
+| 项 | 现状 | 处理 |
 | --- | --- | --- |
-| 诊断开关过多 | 共 **70** 个 `CNE_METAL_*` 环境变量散落在 native/haxe/source | 收敛为统一 `CNE_METAL_DIAG=<mask>` 或配置文件；保留 `DRAWPROBE/UVLOG/FBOLOG/COVERAGE` 等高频项 |
-| ~~AOT 失败不阻塞构建~~ **已修复** | `gen_shader_aot.py --strict` 对照 `metal/audit/aot-expected.json`（允许的 4 个 mod 失败 + 最低 metallib 覆盖率）；`--check` 不再改动工作区 | CI 已通过 `verify.sh` 使用 strict |
-| 文档/缓存数字不同步 | `README.MD` / `METAL-TODO.md` 中的 116/112 等数字是快照 | ✅ `metal/scripts/check-docs.py` 自动校验（已接入 `verify.sh` 与 GitHub Action） |
-| ~~没有一键验证入口~~ **已修复** | 各检查散落在不同脚本 | ✅ 根目录 `verify.sh`：翻译器测试 + AOT 严格审计 + 文档校验（`--no-aot` / `--with-native` 可选） |
-| ~~翻译器回归无单测~~ **已修复** | 翻译器规则此前只靠真实 shader 间接覆盖 | ✅ `TestTranslateCompat.hx`（38 项）+ `TestTranslate.hx`（40 项），`verify.sh` 自动执行 |
-| ~~无自动化像素回归~~ **工具链就绪** | `CNE_METAL_SHOT_RAW` 扩展为多帧列表；`metal/tools/frame_diff.py`（含自检）负责逐像素 diff/阈值/BMP 可视化；`metal/scripts/pixel-regression.sh` 场景驱动（`--update` 写金帧） | 金帧需在有 app 的机器上生成（`metal/autotests/golden` 已 gitignore）；CI 目前只跑自检 |
-| 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
-| 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |
-| ~~发布构建手工步骤多~~ **已修复** | universal exe/ndll 的 x86_64 切片、DMG 暂存/重签名、校验过去靠手工命令 | ✅ `metal/scripts/make-universal.sh`（`--check/--dry-run/--verify/--dmg/--reuse/--keep-mods/--no-sign`）+ `docs/RELEASE.md` 流程 |
+| `glBlendColor` | 空实现（bgfx 状态无该项） | 需要时改走 shader uniform |
+| `glDepthRangef` | 空实现 | 需要时映射 viewport 深度范围 |
+| `glPolygonOffset` | 空实现（bgfx 无 depth-bias 状态） | 3D 用例需要时用 MSL depth bias |
+| `glLineWidth` | 忽略（Metal 1px） | 需要时用几何着色/扩展线渲染 |
+| MSAA / `glSampleCoverage` | 未启用 MSAA，恒满覆盖 | 需要时重建带 MSAA 的 RT |
+| 离屏 view id 上限 199/帧 | 超限复用并打印一次警告 | 需要时改动态 view 池或直连 Metal |
+| 未知纹理格式回退 | `BytesPerPixel` 未知时按 4 B/px（窄格式已展开） | 对未知格式显式报错并跳过上传 |
+| 死代码 | `lime_gl_clear_depth`、`glBlendBarrier`、`ViewForFramebuffer` 无调用 | 清理或注明 proto-only |
 
 ---
 
-## 8. 非 Metal 子系统（说明：不属于渲染后端缺口，列出以免误解）
+## 6. P2 — 翻译器兼容性剩余（不改 mod）
 
-| 子系统 | 实现 | 说明 |
+已支持（有单测）：数组 varying、数组构造、截断式向量/标量构造、标量/无长度 uniform 数组、
+swizzle 复合赋值、prototype 前置声明、内置函数（radians/degrees/length/atan2）、重载参数折叠、块注释。
+
+| # | 待支持 | 涉及 |
 | --- | --- | --- |
-| 音频 | OpenAL（macOS 自带 framework，见 `README.md` §191） | CPU/系统音频，与 Metal 无关 |
-| 视频解码 | `hxvlc`（VLC，`VIDEO_CUTSCENES` 定义于 `project.xml:124`） | 解码后得到 BitmapData → 以纹理上屏；**上屏仍走 Metal** |
-| 图像解码 | libpng（CPU） | 解码后纹理上传走 Metal |
-| 字体光栅化 | FreeType（CPU） | 字形位图 → 纹理上传走 Metal |
-| 窗口/输入 | SDL3 | 呈现层由 `CAMetalLayer` + bgfx 完成 |
-| 游戏逻辑/渲染抽象 | CNE/Flixel/OpenFL（Haxe） | 见 §1 架构项 |
+| 1 | 文件级**可变**全局变量 → MSL（目前仅常量全局加 `constant`） | 部分 mod 的全局 scratch 变量 |
+| 2 | `mat4` 参数展开/构造（`mat4(x)` 等非常规构造） | `saturation.frag` 类 |
+| 3 | 预处理边界：多行宏、`#version` 变体、`#line` 等 | `Preprocessor.hx` |
+
+验收：未修改的 mod + `CNE_METAL_AOT_RUNTIME_TRANSLATE=0` 启动，无 `GLSL->MSL failed`。
 
 ---
 
-## 9. 建议执行顺序（按性价比）
+## 7. P3 — 测试/发布设施剩余
 
-1. **§3.1 mask + §3.3 colorMask/blend equation**（1–2 天，补上 2D 最后的功能缺口，风险中）；
-2. **§3.2 readPixels**（1 天，解锁截图/读回）；
-3. **§2.1/2.2 翻译器与 metallib 修补**（2–3 天，去掉运行时翻译与首次编译卡顿，并为 §6 铺路）；
-4. **§6 翻译器兼容性（不改 mod）**（与 3 合并做，用真实 mod shader 做回归集）；
-5. **§1.1 Metal-native Context3D**（2–3 天，真正消除 GL 形状；之后再谈 §1.2 去掉 bgfx）；
-6. §4 3D 能力 / §5 隐患 / §7 工程债按需求推进。
+| 项 | 现状 | 下一步 |
+| --- | --- | --- |
+| 像素回归金帧 | 工具链完成（`frame_diff.py`、`pixel-regression.sh`、自检已接入 `verify.sh`），但无金帧 | 构建 app 后跑 `pixel-regression.sh --app <app> --scenario menu --update` 生成基线 |
+| CI | 模板在 `docs/ci/metal-verify.yml`；推 `.github/workflows/` 需要 token 的 `workflow` scope | `gh auth refresh -s workflow` 后复制模板并 push |
+| 性能回归 | `profile`/hitch 数据只能人工判读 | 可扩展 `verify.sh` 解析 `[cne-prof]` 阈值 |
 
 ---
 
-## 10. 复现与诊断速查
+## 8. 建议顺序
+
+1. §3.1 mask 运行时验证（需构建一次 app，同时生成像素回归金帧）；
+2. §3.2 readPixels（解锁截图/读回）；
+3. §6-1/§6-2 剩余翻译器兼容（为关闭运行时翻译兜底铺路）；
+4. §2.2 关闭运行时翻译默认值；
+5. §1.1 Metal-native Context3D（最大架构项）；
+6. §4 3D / §5 状态语义按需。
+
+---
+
+## 9. 快速入口
 
 ```sh
-cd CodenameEngine-1.0.1
-
-# 原语覆盖（哪些 lime_gl_* 真正被调用 / 空实现）
-CNE_METAL_COVERAGE=1 CNE_METAL_COVERAGE_OUT=/tmp/cov.txt ./export/release/macos/bin/CodenameEngine.app/Contents/MacOS/CodenameEngine
-
-# 逐 draw 探针（prog/fbo/tex/size/rt/m0/m5/m13）
-CNE_METAL_DRAWPROBE=1 ...
-
-# 屏幕合成翻转判定 / FBO 创建
-CNE_METAL_UVLOG=1 ...        CNE_METAL_FBOLOG=1 ...
-
-# AOT 重新生成（看 failed / metallib 覆盖）
-python3 metal/scripts/gen_shader_aot.py
-
-# 静态检查 + 构建
-./metal/scripts/check-compile.sh --lime "$HOME/haxelib-dev/lime-832" --hxcpp "$HOME/haxelib/hxcpp/4,3,2"
-./metal/scripts/apply.sh --lime "$HOME/haxelib-dev/lime-832" --build
+./verify.sh                                   # 翻译器单测 + AOT 严格审计 + 文档 + 截图 diff 自检
+./verify.sh --with-native                     # 追加 C++/bgfx 编译检查
+./metal/scripts/diag.sh --list                # 诊断类别（见 docs/DIAGNOSTICS.md）
+./metal/scripts/pixel-regression.sh --selftest
+./metal/scripts/gen_shader_aot.py --check --strict
 ```
-
----
-
-## 11. 参考文档
-
-- `metal/audit/primitives.md` — 269 个原语静态/运行时审计（118 完整 / 28 部分 / 52 仅镜像 / 71 空实现；运行时实际 49 个）
-- `metal/audit/paths.md` — 渲染特性路径审计（含 R1–R7 风险清单与像素抽查）
-- `metal/audit/openfl-native.md` — 消除 GL 形状的原生化方案（方案 B + Phase 0–4 + 直连 Metal 原型）
-- `metal/audit/aot-shaders.md` / `aot-coverage.md` — AOT 覆盖与逐 stage 明细
-- `metal/README.md` — 构建/补丁/历史问题记录（§63 为遗留问题与结论）

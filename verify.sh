@@ -39,7 +39,9 @@ step "1/4 translator unit tests"
 "$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslate --interp
 "$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslateCompat --interp
 
-step "2/4 screenshot diff self test"
+step "2/4 diagnostics facade + screenshot diff self test"
+"$PROJECT/metal/scripts/diag.sh" --list >/dev/null
+"$PROJECT/metal/scripts/diag.sh" --print stats,fbo >/dev/null
 python3 "$PROJECT/metal/tools/frame_diff.py" --selftest
 
 if [ "$RUN_AOT" = "1" ]; then

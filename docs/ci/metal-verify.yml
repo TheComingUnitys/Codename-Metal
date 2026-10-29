@@ -42,6 +42,11 @@ jobs:
       - name: Screenshot diff self test
         run: python3 CodenameEngine-1.0.1/metal/tools/frame_diff.py --selftest
 
+      - name: Diagnostics facade smoke test
+        run: |
+          CodenameEngine-1.0.1/metal/scripts/diag.sh --list >/dev/null
+          CodenameEngine-1.0.1/metal/scripts/diag.sh --print stats,fbo >/dev/null
+
       - name: Shell syntax
         run: |
           bash -n verify.sh

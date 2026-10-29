@@ -38,7 +38,9 @@ Codename-Metal/
 ├── README.MD                  ← 本文件
 ├── LICENSE                    ← Apache-2.0（上游许可证副本）
 ├── docs/
-│   └── METAL-TODO.md          ← Metal 后端剩余工作清单（架构/AOT/2D 功能/3D/工程债）
+│   ├── METAL-TODO.md          ← 仅剩待办（架构/AOT/2D 功能/3D/工程债）
+│   ├── DIAGNOSTICS.md         ← 诊断/测试手册（diag.sh、日志格式、抓帧回放、像素回归）
+│   └── RELEASE.md             ← 发布流程（universal + DMG + tag/Release）
 ├── CodenameEngine-1.0.1/      ← 游戏工程（上游 CNE 1.0.1 源码 + 本仓库的 Metal 改动）
 │   ├── project.xml
 │   ├── source/                ← Haxe 游戏源码（含少量 Metal 相关改动）
@@ -262,6 +264,9 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 
 ## 8. 诊断开关（环境变量）
 
+> 推荐用统一入口 `metal/scripts/diag.sh`（`--list` 查看类别）；完整说明、日志格式、抓帧回放与像素回归见
+> [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。历史环境变量仍然有效。
+
 | 开关 | 作用 |
 | --- | --- |
 | `CNE_METAL_PROFILE=1` | 每 240 帧打印 CPU 前端耗时：draws/frame、bind、bgfx submit、uniform、纹理上传（µs/帧、MB/帧） |
@@ -310,12 +315,13 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 
 ## 11. 已知限制 / Roadmap
 
-参见 [docs/METAL-TODO.md](docs/METAL-TODO.md)，摘要：
+[docs/METAL-TODO.md](docs/METAL-TODO.md) 现在**只保留未完成项**，摘要：
 
-- OpenFL 仍使用 GL 形状 API（`lime_gl_*`），后续可做 Metal-native `Context3D`（方案见
-  `metal/audit/openfl-native.md`）；
-- 3 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod shader，需上游修复）；
-- `DisplayObject.mask`（stencil 状态未接线）、`readPixels`（截图/读回）为条件性功能缺口；
+- 架构：OpenFL 仍走 GL 形状 API（`lime_gl_*`），可做 Metal-native `Context3D`、再评估去掉 bgfx
+  （方案与 A/B 原型见 `metal/audit/openfl-native.md`、`metal/tools/native_replay/`）；
+- 3 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod 源码问题，需上游修复；覆盖 113/116）；
+- `DisplayObject.mask` 引擎侧已接线（stencil + colorMask + renderbuffer D24S8），待运行时验证；
+  `readPixels`（截图/读回）仍未实现；
 - 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现。
 
 ---
