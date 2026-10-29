@@ -235,6 +235,14 @@ namespace metal {
 			static bool created;
 
 			/**
+				Captures the backbuffer for glReadPixels().  Uses bgfx's screenShot callback and
+				pumps a few BGFX_FRAME_FLUSH frames (command execution without presenting) until
+				the callback delivers the pixels.  Returns false when the capture did not arrive.
+			*/
+			static bool CaptureScreenPixels (std::vector<uint8_t>& out, int& outWidth, int& outHeight,
+				int& outPitch, int& outFormat);
+
+			/**
 				bgfx renders into this render target and the host presents it through
 				its own CAMetalLayer.
 

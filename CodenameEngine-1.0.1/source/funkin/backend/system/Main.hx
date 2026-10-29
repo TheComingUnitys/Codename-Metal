@@ -76,7 +76,13 @@ class Main extends Sprite
 
 		CrashHandler.init();
 
-		addChild(game = new FunkinGame(gameWidth, gameHeight, MainState, Options.framerate, Options.framerate, skipSplash, startFullscreen));
+		var initialState:Class<flixel.FlxState> = MainState;
+		#if sys
+		if (Sys.getEnv("CNE_METAL_SELFTEST") == "1")
+			initialState = funkin.backend.debug.MetalSelfTestState;
+		#end
+
+		addChild(game = new FunkinGame(gameWidth, gameHeight, initialState, Options.framerate, Options.framerate, skipSplash, startFullscreen));
 
 		#if (!mobile && !web)
 		addChild(framerateSprite = new funkin.backend.system.framerate.Framerate());

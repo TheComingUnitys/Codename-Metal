@@ -26,6 +26,9 @@ built and debugged.
 - **着色器 AOT**：构建期把 GLSL 翻译成 Metal Shading Language 并预编译为 `.metallib`
   （当前 116 个 stage 中 114 个带预编译库；运行时零 GLSL 翻译）。
 - **双路径**：Lime 的 `lime_gl_*` CFFI 兼容层 + 更快的原生 `cne_metal_*` 路径（默认启用）。
+- **读回与运行时自检**：`glReadPixels` 已实现（离屏目标走 READ_BACK 纹理 + `bgfx::read`，
+  背缓冲走一帧缓存）；`CNE_METAL_SELFTEST=1` 会画一个带 mask 的 OpenFL 精灵并端到端校验
+  mask 与读回像素，失败时非零退出。
 - **可诊断**：`CNE_METAL_PROFILE`、`CNE_METAL_DRAWPROBE`、`CNE_METAL_COVERAGE`、
   `CNE_METAL_HITCH` 等 70 个环境变量开关（见 §8）。
 - **已实机验证**：主菜单 / 警告页 / 开场视频 / 选谱 / Dusttale 战斗 / Winter Horrorland /
@@ -325,8 +328,9 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 - 架构：OpenFL 仍走 GL 形状 API（`lime_gl_*`），可做 Metal-native `Context3D`、再评估去掉 bgfx
   （方案与 A/B 原型见 `metal/audit/openfl-native.md`、`metal/tools/native_replay/`）；
 - 2 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod 源码问题，需上游修复；覆盖 114/116）；
-- `DisplayObject.mask` 引擎侧已接线（stencil + colorMask + renderbuffer D24S8），待运行时验证；
-  `readPixels`（截图/读回）仍未实现；
+- `DisplayObject.mask` 已端到端验证（`CNE_METAL_SELFTEST=1`：内部白、外部被遮，
+  `Window.readPixels` 与 `BitmapData.draw` 均通过）；
+- `readPixels` 已实现：离屏立即读回，背缓冲一帧缓存（第一次布防、下一次返回像素）；
 - 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现；
 - bgfx 无法表达的状态（`blendColor`/`depthRange`/`polygonOffset`/`lineWidth>1`/MSAA/嵌套 mask 的
   stencil write-mask 等）已**记录并一次性告警**，决策为不实现（详见 `docs/DIAGNOSTICS.md` §4.1）。

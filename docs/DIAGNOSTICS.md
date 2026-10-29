@@ -92,7 +92,18 @@ Threshold regression: `python3 metal/tools/profile_check.py <log> --max-frontend
 these must be listed in `metal/audit/aot-expected.json`. Anything outside the allowlist makes
 the strict audit in `./verify.sh` fail.
 
-### 2.5 Screenshots / raw frames (`--shot`)
+### 2.5 Readback (`readPixels`)
+
+`lime_gl_read_pixels` is implemented:
+
+- offscreen FBOs: blit the colour texture into a `BGFX_TEXTURE_READ_BACK` texture, then
+  `bgfx::read` (immediate);
+- backbuffer: one-frame cache (a call arms the capture; the next presented frame stores the
+  pixels; the following call returns them).
+
+`CNE_METAL_READPIXELS_DEBUG=1` logs capture attempts.
+
+### 2.6 Screenshots / raw frames (`--shot`)
 
 Writes `<path>.raw` (headerless, 4 bytes/px, BGRA) plus `<path>.txt` (size/pitch/format/bytes).
 Compare with `metal/tools/frame_diff.py`; scenario regression:
@@ -157,7 +168,23 @@ When adding a diagnostic: extend the `diag.sh` category table and document it he
 
 ---
 
-## 5. Common combinations
+## 5. Runtime self test
+
+```sh
+CNE_METAL_SELFTEST=1 CNE_METAL_SELFTEST_EXIT=1 <app>/Contents/MacOS/CodenameEngine
+```
+
+Creates a dark background plus an OpenFL sprite masked by a circle, then verifies
+
+1. `Window.readPixels` (backbuffer readback): inside the mask is white, inside the content
+   but outside the mask is background, outside the content is background;
+2. `BitmapData.draw(content)` (offscreen readback): inside the mask is white, outside is
+   transparent.
+
+Every check prints `[cne-selftest] ok|FAIL ...`; the app exits 0 only when all pass. The
+deterministic pixel-regression scenario `selftest` runs the same scene.
+
+## 6. Common combinations
 
 | Goal | Command |
 | --- | --- |

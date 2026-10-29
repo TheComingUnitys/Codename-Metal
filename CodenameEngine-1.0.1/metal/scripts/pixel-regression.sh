@@ -34,16 +34,16 @@ usage() {
 	sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-for arg in "$@"; do
-	case "$arg" in
+while [ $# -gt 0 ]; do
+	case "$1" in
 		--selftest) exec python3 "$DIFF_TOOL" --selftest ;;
-		--update) UPDATE=1 ;;
-		--app) shift; APP="$1" ;;
-		--scenario) shift; SCENARIO="$1" ;;
-		--outdir) shift; OUTDIR="$1" ;;
-		--timeout) shift; TIMEOUT="$1" ;;
+		--update) UPDATE=1; shift ;;
+		--app) APP="$2"; shift 2 ;;
+		--scenario) SCENARIO="$2"; shift 2 ;;
+		--outdir) OUTDIR="$2"; shift 2 ;;
+		--timeout) TIMEOUT="$2"; shift 2 ;;
 		-h|--help) usage; exit 0 ;;
-		*) echo "unknown argument: $arg" >&2; exit 2 ;;
+		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
 
@@ -59,28 +59,29 @@ SCENARIO_FILE="$SCENARIO_DIR/$SCENARIO.json"
 mkdir -p "$OUTDIR"
 
 AUTOKEYS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("autokeys",""))' "$SCENARIO_FILE")"
+SCENARIO_ENV="$(python3 -c 'import json,sys; print(" ".join("%s=%s" % (k, v) for k, v in json.load(open(sys.argv[1])).get("env", {}).items()))' "$SCENARIO_FILE")"
 SHOT_SPEC="$(python3 -c 'import json,sys,os; cfg=json.load(open(sys.argv[1])); out=sys.argv[2]; print(",".join("%d:%s" % (c["frame"], os.path.join(out, c["name"])) for c in cfg["captures"]))' "$SCENARIO_FILE" "$OUTDIR")"
 
 echo "[pixel-regression] scenario=$SCENARIO captures=$SHOT_SPEC"
 echo "[pixel-regression] outdir=$OUTDIR"
 
 LOG="$OUTDIR/engine.log"
-env CNE_METAL_SHOT_RAW="$SHOT_SPEC" ${AUTOKEYS:+CNE_METAL_AUTOKEYS="$AUTOKEYS"} \
+env $SCENARIO_ENV CNE_METAL_SHOT_RAW="$SHOT_SPEC" ${AUTOKEYS:+CNE_METAL_AUTOKEYS="$AUTOKEYS"} \
 	"$APP/Contents/MacOS/CodenameEngine" >"$LOG" 2>&1 &
 PID=$!
 
 # Wait until every capture has been written, then stop the engine.
 EXPECTED=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["captures"]))' "$SCENARIO_FILE")
 for _ in $(seq 1 "$TIMEOUT"); do
-	COUNT=$(ls "$OUTDIR"/*.raw 2>/dev/null | wc -l | tr -d ' ')
-	[ "$COUNT" -ge "$EXPECTED" ] && break
+	COUNT=$(find "$OUTDIR" -maxdepth 1 -name '*.raw' 2>/dev/null | wc -l | tr -d ' ' || true)
+	if [ "$COUNT" -ge "$EXPECTED" ]; then break; fi
 	sleep 1
 done
 sleep 1
 kill "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 
-COUNT=$(ls "$OUTDIR"/*.raw 2>/dev/null | wc -l | tr -d ' ')
+COUNT=$(find "$OUTDIR" -maxdepth 1 -name '*.raw' 2>/dev/null | wc -l | tr -d ' ' || true)
 if [ "$COUNT" -lt "$EXPECTED" ]; then
 	echo "error: captured $COUNT/$EXPECTED frames (see $LOG)" >&2
 	exit 1
@@ -110,7 +111,7 @@ while IFS= read -r NAME; do
 		continue
 	fi
 	# shellcheck disable=SC2086
-	if ! python3 "$DIFF_TOOL" "$GOLDEN" "$ACTUAL" $TOL_ARGS --diff-image "$OUTDIR/$NAME.diff.bmp"; then
+	if ! python3 "$DIFF_TOOL" "$GOLDEN" "$ACTUAL" --allow-size-mismatch $TOL_ARGS --diff-image "$OUTDIR/$NAME.diff.bmp"; then
 		STATUS=1
 	fi
 done < <(python3 -c 'import json,sys; [print(c["name"]) for c in json.load(open(sys.argv[1]))["captures"]]' "$SCENARIO_FILE")

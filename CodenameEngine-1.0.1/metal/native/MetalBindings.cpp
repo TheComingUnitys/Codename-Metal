@@ -7331,11 +7331,135 @@ namespace lime {
 		uint8_t* out = PointerFromDouble (pixels);
 		if (out == nullptr) return;
 
-		// bgfx reads back asynchronously; OpenFL uses glReadPixels for screenshots and
-		// BitmapData.draw, so route it through bgfx::readTexture on the current target.
-		// Left as an explicit TODO: the copy must happen one frame later.
-		(void)x; (void)y; (void)width; (void)height; (void)format; (void)type;
-		MetalContext::ReportUnimplemented ("lime_gl_read_pixels (readback is asynchronous in bgfx)");
+		const bool wantsBgra = (format == GL_BGRA || format == GL_BGRA8_EXT);
+		const bool wantsRgba = (format == GL_RGBA);
+		const size_t bytes = (size_t)std::max (0, width) * (size_t)std::max (0, height) * 4;
+
+		if (type != GL_UNSIGNED_BYTE || (!wantsBgra && !wantsRgba))
+		{
+			MetalContext::ReportUnimplemented ("lime_gl_read_pixels (only RGBA/BGRA with UNSIGNED_BYTE is implemented)");
+			std::memset (out, 0, bytes);
+			return;
+		}
+		if (width <= 0 || height <= 0) return;
+
+		// Readback is synchronous from GL's point of view: for the backbuffer we ask bgfx for
+		// a screen shot and pump BGFX_FRAME_FLUSH frames (commands execute, nothing presents);
+		// for an offscreen FBO we blit the colour texture into a READ_BACK texture first.
+		std::vector<uint8_t> rgba;
+		int sw = 0;
+		int sh = 0;
+		bool ok = false;
+		const int fbo = MetalContext::state.currentFramebuffer;
+
+		if (fbo == 0)
+		{
+			std::vector<uint8_t> raw;
+			int rw = 0, rh = 0, pitch = 0, fmt = 0;
+			ok = MetalContext::CaptureScreenPixels (raw, rw, rh, pitch, fmt);
+			if (ok)
+			{
+				sw = rw;
+				sh = rh;
+				rgba.resize ((size_t)sw * (size_t)sh * 4);
+				const bool bgra = (fmt == (int)bgfx::TextureFormat::BGRA8);
+				for (int row = 0; row < sh; ++row)
+				{
+					const uint8_t* s = raw.data () + (size_t)row * (size_t)pitch;
+					uint8_t* d = rgba.data () + (size_t)row * (size_t)sw * 4;
+					for (int col = 0; col < sw; ++col)
+					{
+						d[0] = s[bgra ? 2 : 0];
+						d[1] = s[1];
+						d[2] = s[bgra ? 0 : 2];
+						d[3] = s[3];
+						s += 4;
+						d += 4;
+					}
+				}
+			}
+		}
+		else
+		{
+			EnsureFramebuffer (fbo);
+			auto fbIt = framebuffers.find (fbo);
+			auto texIt = (fbIt != framebuffers.end ()) ? textures.find (fbIt->second.texture) : textures.end ();
+			if (fbIt != framebuffers.end () && texIt != textures.end () && bgfx::isValid (texIt->second.handle)
+			&&  texIt->second.width > 0 && texIt->second.height > 0)
+			{
+				sw = texIt->second.width;
+				sh = texIt->second.height;
+
+				static std::map<uint64_t, bgfx::TextureHandle> readbacks;
+				const uint64_t key = ((uint64_t)(uint32_t)sw << 32) | (uint32_t)sh;
+				bgfx::TextureHandle& readback = readbacks[key];
+				if (!bgfx::isValid (readback))
+				{
+					readback = bgfx::createTexture2D ((uint16_t)sw, (uint16_t)sh, false, 1,
+						bgfx::TextureFormat::RGBA8,
+						BGFX_TEXTURE_READ_BACK | BGFX_TEXTURE_BLIT_DST, nullptr);
+				}
+
+				if (bgfx::isValid (readback))
+				{
+					const bgfx::ViewId view = 249;   // reserved: 0..199 offscreen, 250+ screen
+					bgfx::setViewRect (view, 0, 0, (uint16_t)sw, (uint16_t)sh);
+
+					bgfx::TextureRegion dst;
+					dst.init (readback, 0, 0, (uint16_t)sw, (uint16_t)sh);
+					bgfx::TextureRegion src;
+					src.init (texIt->second.handle, 0, 0, (uint16_t)sw, (uint16_t)sh);
+					bgfx::blit (view, dst, src);
+
+					rgba.resize ((size_t)sw * (size_t)sh * 4);
+					const uint32_t ready = bgfx::read (dst, rgba.data ());
+					uint32_t now = bgfx::frame (BGFX_FRAME_FLUSH);
+					for (int attempt = 0; attempt < 8 && now < ready; ++attempt)
+					{
+						now = bgfx::frame (BGFX_FRAME_FLUSH);
+					}
+					ok = true;
+				}
+			}
+		}
+
+		if (!ok || rgba.empty ())
+		{
+			MetalContext::ReportUnimplemented ("lime_gl_read_pixels (readback unavailable for this target)");
+			std::memset (out, 0, bytes);
+			return;
+		}
+
+		// GL's readPixels origin is the bottom-left corner; both capture paths above are
+		// top-down, so flip rows while cropping and emit the requested channel order.
+		for (int row = 0; row < height; ++row)
+		{
+			int sy = (sh - 1) - (y + row);
+			if (sy < 0) sy = 0;
+			if (sy >= sh) sy = sh - 1;
+			for (int col = 0; col < width; ++col)
+			{
+				int sx = x + col;
+				if (sx < 0) sx = 0;
+				if (sx >= sw) sx = sw - 1;
+				const uint8_t* s = rgba.data () + (((size_t)sy * (size_t)sw) + (size_t)sx) * 4;
+				uint8_t* d = out + (((size_t)row * (size_t)width) + (size_t)col) * 4;
+				if (wantsBgra)
+				{
+					d[0] = s[2];
+					d[1] = s[1];
+					d[2] = s[0];
+					d[3] = s[3];
+				}
+				else
+				{
+					d[0] = s[0];
+					d[1] = s[1];
+					d[2] = s[2];
+					d[3] = s[3];
+				}
+			}
+		}
 	}
 
 	/**

@@ -70,10 +70,28 @@ def load_frame(path):
     return Frame(width, height, pitch, fmt, raw, raw_path)
 
 
-def compare(a, b, order, tolerance):
+def scaled(frame, width, height):
+    """Nearest-neighbour rescale, used when two captures have different drawable sizes."""
+    raw = bytearray(width * height * 4)
+    for y in range(height):
+        sy = min(frame.height - 1, (y * frame.height) // height)
+        for x in range(width):
+            sx = min(frame.width - 1, (x * frame.width) // width)
+            src = sy * frame.pitch + sx * 4
+            dst = (y * width + x) * 4
+            raw[dst:dst + 4] = frame.raw[src:src + 4]
+    return Frame(width, height, width * 4, frame.format, bytes(raw), frame.path)
+
+
+def compare(a, b, order, tolerance, allow_size_mismatch=False):
     if a.width != b.width or a.height != b.height:
-        raise SystemExit('error: frame sizes differ: %dx%d vs %dx%d'
-                         % (a.width, a.height, b.width, b.height))
+        if not allow_size_mismatch:
+            raise SystemExit('error: frame sizes differ: %dx%d vs %dx%d'
+                             % (a.width, a.height, b.width, b.height))
+        width = min(a.width, b.width)
+        height = min(a.height, b.height)
+        a = scaled(a, width, height)
+        b = scaled(b, width, height)
 
     diff_pixels = 0
     total_abs = 0
@@ -220,6 +238,8 @@ def main(argv=None):
     parser.add_argument('--max-mean', type=float, default=None)
     parser.add_argument('--max-abs', type=int, default=None)
     parser.add_argument('--channel-order', choices=sorted(CHANNELS), default='bgra')
+    parser.add_argument('--allow-size-mismatch', action='store_true',
+                        help='rescale both frames to the smaller size before comparing')
     parser.add_argument('--diff-image', default=None, help='write a BMP visualising the diff')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--selftest', action='store_true')
@@ -233,7 +253,7 @@ def main(argv=None):
     order = CHANNELS[args.channel_order]
     ref = load_frame(args.reference)
     act = load_frame(args.actual)
-    stats = compare(ref, act, order, args.tolerance)
+    stats = compare(ref, act, order, args.tolerance, args.allow_size_mismatch)
     problems = judge(stats, args)
 
     if args.diff_image:

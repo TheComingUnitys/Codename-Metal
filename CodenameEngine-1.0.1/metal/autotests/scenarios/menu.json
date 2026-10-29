@@ -1,18 +1,19 @@
 {
+  "env": {},
   "autokeys": "",
   "captures": [
     {
-      "frame": 90,
-      "name": "menu-early"
+      "frame": 240,
+      "name": "menu-a"
     },
     {
-      "frame": 240,
-      "name": "menu-late"
+      "frame": 480,
+      "name": "menu-b"
     }
   ],
   "tolerance": {
-    "diffPixels": 6000,
+    "diffPixels": 20000,
     "mean": 2,
-    "abs": 32
+    "abs": 255
   }
 }

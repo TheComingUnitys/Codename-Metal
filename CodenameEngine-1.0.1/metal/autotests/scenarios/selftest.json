@@ -1,0 +1,21 @@
+{
+  "env": {
+    "CNE_METAL_SELFTEST": "1"
+  },
+  "autokeys": "",
+  "captures": [
+    {
+      "frame": 30,
+      "name": "mask-frame30"
+    },
+    {
+      "frame": 40,
+      "name": "mask-frame40"
+    }
+  ],
+  "tolerance": {
+    "diffPixels": 0,
+    "mean": 0,
+    "abs": 0
+  }
+}

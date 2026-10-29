@@ -21,6 +21,12 @@ CodenameEngine-1.0.1/metal/scripts/pixel-regression.sh \
 
 ## Scenarios
 
+- `selftest` - deterministic mask + readback scene (`CNE_METAL_SELFTEST=1`, 0 tolerance);
+- `menu` - main menu at frames 240/480 (animated, so it uses a loose tolerance).
+
+Captures between runs may differ in drawable size (window restore); `frame_diff` rescales
+both frames to the smaller size before comparing.
+
 `scenarios/<name>.json`:
 
 ```json

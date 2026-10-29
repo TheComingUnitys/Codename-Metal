@@ -35,6 +35,10 @@ documents how it was built and debugged.
   `cne_metal_*` path (enabled by default).
 - **Diagnosable**: 70 `CNE_METAL_*` environment switches (`CNE_METAL_PROFILE`,
   `CNE_METAL_DRAWPROBE`, `CNE_METAL_COVERAGE`, `CNE_METAL_HITCH`, ... - see section 8).
+- **Readback & runtime self test**: `glReadPixels` is implemented (offscreen targets through a
+  READ_BACK texture + `bgfx::read`, the backbuffer through a one-frame cache);
+  `CNE_METAL_SELFTEST=1` renders a masked OpenFL sprite and verifies mask + readback pixels
+  end-to-end, exiting non-zero on failure.
 - **Verified on hardware**: main menu, warning screen, intro cutscene, freeplay, Dusttale
   battles, Winter Horrorland, pause menu and third-party shader effects.
 
@@ -315,8 +319,10 @@ Expected output: `OK - Metal backend compiles against bgfx API v167 and Lime`.
   dropping bgfx are future work (plans and A/B prototype in
   `docs/zh-CN/metal/audit/openfl-native.md`, `metal/tools/native_replay/`);
 - **2** shader stages have no prebuilt `.metallib` (external shader source issues; coverage 114/116);
-- `DisplayObject.mask` is wired on the engine side but needs runtime verification;
-  `readPixels` (screenshots/readback) is still unimplemented;
+- `DisplayObject.mask` verified end-to-end (`CNE_METAL_SELFTEST=1`: inside white, outside
+  masked, both `Window.readPixels` and `BitmapData.draw`);
+- `readPixels` implemented: offscreen immediate, backbuffer one-frame cache (first call arms,
+  next call returns the pixels);
 - 3D / Stage3D capabilities are not implemented;
 - GL states bgfx cannot express (`blendColor`, `depthRange`, `polygonOffset`, `lineWidth>1`,
   MSAA, nested-mask stencil write-mask, ...) are recorded and warned about once; the decision

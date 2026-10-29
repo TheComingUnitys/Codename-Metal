@@ -94,7 +94,16 @@
 `metal/audit/aot-expected.json` 的 allowed fallback；出现 allowlist 之外的失败时
 `./verify.sh` 的 strict 审计会失败。
 
-### 2.5 截图/原始帧（`--shot`）
+### 2.5 读回（`readPixels`）
+
+`lime_gl_read_pixels` 已实现：
+
+- 离屏 FBO：把颜色纹理 blit 到 `BGFX_TEXTURE_READ_BACK` 纹理再 `bgfx::read`（立即）；
+- 背缓冲：一帧缓存（调用布防 → 下一帧保存 → 再下一次调用返回像素）。
+
+`CNE_METAL_READPIXELS_DEBUG=1` 可打印捕获尝试信息。
+
+### 2.6 截图/原始帧（`--shot`）
 
 写入 `<path>.raw`（无头 4B/px，BGRA）与 `<path>.txt`（size/pitch/format/bytes）。
 比对工具：`metal/tools/frame_diff.py`；场景化回归：`metal/scripts/pixel-regression.sh --selftest`。
@@ -161,7 +170,20 @@ grep -rho 'CNE_METAL_[A-Z0-9_]*' CodenameEngine-1.0.1/metal | sort -u
 
 ---
 
-## 5. 常用组合
+## 5. 运行时自检
+
+```sh
+CNE_METAL_SELFTEST=1 CNE_METAL_SELFTEST_EXIT=1 <app>/Contents/MacOS/CodenameEngine
+```
+
+创建深色背景 + 一个被圆形 mask 的 OpenFL 精灵，然后校验：
+
+1. `Window.readPixels`（背缓冲读回）：mask 内为白、内容内 mask 外为背景、内容外为背景；
+2. `BitmapData.draw(content)`（离屏读回）：mask 内为白、外部透明。
+
+每项输出 `[cne-selftest] ok|FAIL ...`；全部通过才退出 0。确定性像素回归场景 `selftest` 复用同一画面。
+
+## 6. 常用组合
 
 | 目标 | 命令 |
 | --- | --- |

@@ -541,6 +541,17 @@ namespace metal {
 	/** target path for CNE_METAL_SHOT_RAW ("" = not requested) */
 	static std::string gShotRawTarget;
 
+	// One-frame screen readback cache for glReadPixels() on the backbuffer.  A request
+	// arms the capture; the next presented frame stores its pixels here so the following
+	// glReadPixels() call can return them synchronously (one frame of latency).
+	static std::vector<uint8_t> gScreenCache;
+	static uint32_t gScreenCacheWidth = 0;
+	static uint32_t gScreenCacheHeight = 0;
+	static uint32_t gScreenCachePitch = 0;
+	static uint32_t gScreenCacheFormat = 0;
+	static bool gScreenCacheValid = false;
+	static bool gScreenCaptureRequested = false;
+
 	struct HostCallback : public bgfx::CallbackI
 	{
 		void fatal (const char*, uint16_t, bgfx::Fatal::Enum, const char* _str) override
@@ -578,6 +589,57 @@ namespace metal {
 	};
 
 	static HostCallback gCallback;
+	static const bool gReadPixelsDebug = std::getenv ("CNE_METAL_READPIXELS_DEBUG") != nullptr;
+
+	bool MetalContext::CaptureScreenPixels (std::vector<uint8_t>& out, int& outWidth, int& outHeight,
+		int& outPitch, int& outFormat)
+	{
+		{
+			std::lock_guard<std::mutex> lock (gShotMutex);
+			if (gScreenCacheValid && !gScreenCache.empty ())
+			{
+				out = gScreenCache;
+				outWidth = (int)gScreenCacheWidth;
+				outHeight = (int)gScreenCacheHeight;
+				outPitch = (int)gScreenCachePitch;
+				outFormat = (int)gScreenCacheFormat;
+				return true;
+			}
+		}
+
+		// First call after a frame boundary: arm the capture for the next presented frame.
+		// The caller receives zeros now and the pixels on its next call (one frame later).
+		gScreenCaptureRequested = true;
+		return false;
+
+		#if 0
+		bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels");
+
+		// bgfx hands the screenshot pixels back while the render thread processes a frame.
+		int attempts = 0;
+		for (; attempts < 6; attempts++)
+		{
+			bgfx::frame (BGFX_FRAME_NONE);
+			{
+				std::lock_guard<std::mutex> lock (gShotMutex);
+				if (gShotPending) break;
+			}
+		}
+		if (gReadPixelsDebug) std::fprintf (stderr, "[cne-readpixels] attempts=%d\n", attempts);
+
+		std::lock_guard<std::mutex> lock (gShotMutex);
+		if (gReadPixelsDebug) std::fprintf (stderr, "[cne-readpixels] pending=%d bytes=%zu\n", gShotPending ? 1 : 0, gShotWrite.size ());
+		if (!gShotPending || gShotWrite.empty ()) return false;
+
+		out.swap (gShotWrite);
+		outWidth = (int)gShotWidth;
+		outHeight = (int)gShotHeight;
+		outPitch = (int)gShotPitch;
+		outFormat = (int)gShotFormat;
+		gShotPending = false;
+		return true;
+		#endif
+	}
 
 	bool MetalContext::Create (void* sdlWindow, int width, int height, bool highDPI)
 	{
@@ -1116,8 +1178,26 @@ namespace metal {
 		metal::ApplyFrameViewOrder ();
 		const double submitMs = SinceProcessStartMs () - submitStartMs;
 
+		const bool captureScreen = gScreenCaptureRequested;
+		if (captureScreen) bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels-cache");
+
 		bgfx::frame ();
 		const double presentMs = SinceProcessStartMs () - submitStartMs - submitMs;
+
+		// Store a requested backbuffer copy for the next glReadPixels() call.  When a raw
+		// screenshot target is active it consumes the callback instead (below).
+		if (captureScreen && gShotPending && gShotRawTarget.empty ())
+		{
+			std::lock_guard<std::mutex> lock (gShotMutex);
+			gScreenCache.swap (gShotWrite);
+			gScreenCacheWidth = gShotWidth;
+			gScreenCacheHeight = gShotHeight;
+			gScreenCachePitch = gShotPitch;
+			gScreenCacheFormat = gShotFormat;
+			gScreenCacheValid = true;
+			gShotPending = false;
+			gScreenCaptureRequested = false;
+		}
 
 		// Write the raw screenshot handed back by bgfx's render thread (see above).
 		if (gShotPending && !gShotRawTarget.empty ())
@@ -1277,6 +1357,8 @@ namespace metal {
 	void MetalContext::ResizeDrawable (int drawableWidth, int drawableHeight)
 	{
 		if (drawableWidth <= 0 || drawableHeight <= 0) return;
+
+		gScreenCacheValid = false;
 
 		windowWidth = drawableWidth;
 		windowHeight = drawableHeight;

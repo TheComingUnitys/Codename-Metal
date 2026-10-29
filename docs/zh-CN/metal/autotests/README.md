@@ -21,6 +21,11 @@ CodenameEngine-1.0.1/metal/scripts/pixel-regression.sh \
 
 ## 场景
 
+- `selftest`：确定性的 mask + 读回场景（`CNE_METAL_SELFTEST=1`，0 容差）；
+- `menu`：主菜单第 240/480 帧（有动画，容差放宽）。
+
+两次运行可能因窗口恢复导致 drawable 尺寸不同；`frame_diff` 会先把两张图缩放到较小尺寸再比较。
+
 `scenarios/<name>.json`：
 
 ```json

@@ -541,8 +541,10 @@ def roots_from_hxml(project_dir):
             line = line.strip()
             if line.startswith('-cp '):
                 path = line[4:].strip()
-                if os.path.isdir(path):
-                    roots.append(path)
+                # release.hxml classpaths are written relative to the project directory.
+                full = path if os.path.isabs(path) else os.path.join(project_dir, path)
+                if os.path.isdir(full):
+                    roots.append(os.path.abspath(full))
     return roots or None
 
 
@@ -634,7 +636,10 @@ def build_sources(project_dir, roots=None):
     seen = set()
     unique = []
     for root in roots:
-        root = os.path.abspath(root)
+        # hxml classpaths are relative to the project, not to the caller's cwd.  Using
+        # abspath() alone made `gen_shader_aot.py --check` enumerate a different set when
+        # run from the repository root (106 stages instead of 116).
+        root = os.path.abspath(root if os.path.isabs(root) else os.path.join(project_dir, root))
         if root in seen or not os.path.isdir(root):
             continue
         seen.add(root)
