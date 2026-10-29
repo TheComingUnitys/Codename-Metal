@@ -16,12 +16,15 @@
 | 已预编译 `.metallib` | **114 / 116** |
 | 构建期 GLSL→MSL 翻译失败 | **2 个 stage** |
 
-### 2.1 构建期仍失败的 2 个 stage（外部阻塞：mod 源码本身非法）
+### 2.1 构建期仍失败的 2 个 stage（外部 shader 源自身问题）
 
-| key | shader | 原因 | 处理建议 |
-| --- | --- | --- | --- |
-| `EFD80EB711B13CBD` | mod `firething.frag` | 调用了未定义的 `noise1()`（只有 `noise1_2`） | 上游修函数名 |
-| `B3064EBB937D8A8F` | mod `line.frag` | `gl_FragColor = vec2`（vec4 赋 vec2，非法 GLSL） | 上游改 `vec4(...)` |
+| key | stage | 原因 |
+| --- | --- | --- |
+| `EFD80EB711B13CBD` | fragment | 调用了未声明的函数 `noise1()`（源中只有 `noise1_2`） |
+| `B3064EBB937D8A8F` | fragment | `gl_FragColor = vec2`（vec4 赋 vec2，非法 GLSL） |
+
+两处问题都位于外部 shader 源码中；本仓库不修改这些源码，逐条明细见
+`metal/audit/aot-coverage.md` 与 `metal/audit/aot-expected.json`。
 
 引擎侧已无已知翻译缺陷；新增失败会被 `--strict` 审计拦下。
 
@@ -40,8 +43,8 @@ CAMetalLayer drawable 快照）。**任何实现都必须用运行中的 app 验
 `BitmapData.draw(renderer)` 两条路径），因此归入本类。
 
 ### 1.3 运行时翻译兜底改为默认关闭
-`ShaderAot.isRuntimeFallbackEnabled()` 目前默认开。要改成默认关闭，必须用真实 mod 集合跑一次
-（含"构建后才装入新 mod"的场景），确认没有未知翻译依赖；否则新 mod 的 shader 会直接失败。
+`ShaderAot.isRuntimeFallbackEnabled()` 目前默认开。要改成默认关闭，必须用真实的第三方 shader 集合跑一次
+（含"构建后才新增 shader"的场景），确认没有未知翻译依赖；否则新增 shader 会直接失败。
 
 ### 1.4 架构项 1.1/1.2/1.4（P0）
 - 1.1 Metal-native `Context3D`（消除 `lime_gl_*` 与 GL 状态仿真）；
@@ -51,7 +54,7 @@ CAMetalLayer drawable 快照）。**任何实现都必须用运行中的 app 验
 
 ### 1.5 3D / Stage3D 能力
 3D 纹理上传、`glGenerateMipmap`、MRT/drawBuffers、blitFramebuffer、clearBuffer、transform feedback、
-uniform block、query、instancing 等未实现。实现后必须用 3D mod/测试场景验证。
+uniform block、query、instancing 等未实现。实现后必须用 3D 测试场景验证。
 
 ### 1.6 像素回归金帧
 工具链已就绪（`frame_diff.py`、`pixel-regression.sh`、自检已接入 `verify.sh`），但**没有金帧**。
@@ -64,7 +67,7 @@ uniform block、query、instancing 等未实现。实现后必须用 3D mod/测�
 
 | 项 | 阻塞原因 | 解除方式 |
 | --- | --- | --- |
-| 2.1 最后 2 个 mod shader | mod 源码非法 GLSL（见 §0） | 上游修 mod；引擎侧不为数字改 mod |
+| 2.1 最后 2 个 shader 失败 | 外部 shader 源非法 GLSL（见 §0） | 由上游修正；引擎侧不为数字改外部源码 |
 | GitHub Actions workflow | 当前 `gh` token 缺 `workflow` scope，不能推 `.github/workflows/` | `gh auth refresh -s workflow` 后 `cp docs/ci/metal-verify.yml .github/workflows/` |
 
 ---
@@ -74,7 +77,7 @@ uniform block、query、instancing 等未实现。实现后必须用 3D mod/测�
 1. 构建一次 app：先 `./metal/scripts/make-universal.sh --check` → `--dmg`；
 2. 生成像素回归金帧（§1.6），同时验证 §1.1 mask；
 3. 实现并实测 §1.2 readPixels；
-4. §1.3 关闭运行时翻译兜底（配合真实 mod 回归）；
+4. §1.3 关闭运行时翻译兜底（配合真实第三方 shader 回归）；
 5. §1.1（Context3D）→ §1.2（去 bgfx）→ §1.4（删适配层）；
 6. §1.5 3D 按需。
 
