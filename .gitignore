@@ -24,3 +24,7 @@ CodenameEngine-1.0.1/.vscode/*.log
 # FLA/animate source art (152 MB) - not needed to build or run the game
 CodenameEngine-1.0.1/art/flashFiles/
 
+
+# Python bytecode
+__pycache__/
+*.pyc
