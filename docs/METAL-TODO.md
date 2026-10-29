@@ -205,6 +205,7 @@
 | ~~无自动化像素回归~~ **工具链就绪** | `CNE_METAL_SHOT_RAW` 扩展为多帧列表；`metal/tools/frame_diff.py`（含自检）负责逐像素 diff/阈值/BMP 可视化；`metal/scripts/pixel-regression.sh` 场景驱动（`--update` 写金帧） | 金帧需在有 app 的机器上生成（`metal/autotests/golden` 已 gitignore）；CI 目前只跑自检 |
 | 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
 | 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |
+| ~~发布构建手工步骤多~~ **已修复** | universal exe/ndll 的 x86_64 切片、DMG 暂存/重签名、校验过去靠手工命令 | ✅ `metal/scripts/make-universal.sh`（`--check/--dry-run/--verify/--dmg/--reuse/--keep-mods/--no-sign`）+ `docs/RELEASE.md` 流程 |
 
 ---
 

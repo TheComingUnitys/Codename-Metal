@@ -1,36 +1,32 @@
 #!/usr/bin/env bash
-# Build a Universal (arm64 + x86_64) Codename Engine with the Metal renderer.
+# Build a Universal (arm64 + x86_64) Codename Engine with the Metal renderer,
+# and optionally package it as a signed DMG.  This is the pipeline used for the
+# GitHub releases (v1.0.1-metal.x).
 #
-#   ./metal/scripts/make-universal.sh
+#   ./metal/scripts/make-universal.sh                 # build + install universal app
+#   ./metal/scripts/make-universal.sh --dmg           # ... and package a DMG
+#   ./metal/scripts/make-universal.sh --check         # preflight only (no build)
+#   ./metal/scripts/make-universal.sh --dry-run       # print the plan, change nothing
+#   ./metal/scripts/make-universal.sh --verify <app>  # check archs/signature of an app
 #
-# STATUS — verified:
-#   * Universal `lime.ndll`  : WORKS.  lipo of the two hxcpp builds gives
-#                              "x86_64 arm64" (21,246,272 bytes) and, installed into
-#                              the .app, still reports at runtime
-#                              `[cne-metal] bgfx renderer: Metal (Metal: yes)`.
-#   * Universal executable   : the Intel pass of `lime build` currently still emits an
-#                              arm64 binary.  The script detects this and ships the
-#                              arm64 executable (safe) instead of faking a universal one.
-#                              See README 19.3 for the remaining step.
+# Environment overrides: PROJECT_DIR, LIME_DIR, HXCPP_DIR, BGFX_DIR, OUT, REUSE=1.
 #
-# Host prerequisites:
-#   * bgfx / bx / bimg / bimg_decode built for osx-x64
-#     (`metal/scripts/build-bgfx.sh` builds both architectures).
-#   * The HOST toolchain must stay arm64.  xcrun itself is arm64-only, so a Rosetta
-#     x86_64 haxe/neko cannot drive this build:
-#         xcrun: unable to load libxcrun ... (have 'arm64,arm64e', need 'x86_64')
-#     Only the *compiler output* has to be x86_64.
+# Why the x86_64 slice needs its own pass: Lime asks the *host* for the target
+# architecture, so 'lime build mac' always emits arm64 here.  The Intel slice is
+# produced by invoking haxe/hxcpp with HXCPP_M64 directly (hxcpp maps it to
+# HXCPP_ARCH=x86_64 in mac-toolchain.xml and writes to obj/darwin64, leaving the
+# arm64 objects untouched).  The same trick, via -DCNE_X64, builds the Intel ndll.
 #
-# The Intel pass works because of `$HXCPP/toolchain/mac-toolchain.xml`:
-# its `<section unless="HXCPP_ARCH">` is the official override point -- defining
-# HXCPP_ARCH before it makes every `-arch` flag use that value.
+# Host prerequisites (see README 5.x): haxe + haxelib, a Lime dev checkout,
+# hxcpp, and bgfx/bx/bimg built for *both* osx-arm64 and osx-x64.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 METAL_DIR="$(dirname "$HERE")"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$METAL_DIR/.." && pwd)}"
-BGFX_DIR="${BGFX_DIR:-$(cd "$PROJECT_DIR/.." && pwd)/bgfx-master}"
+REPO_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+BGFX_DIR="${BGFX_DIR:-$REPO_DIR/bgfx-master}"
 LIME_DIR="${LIME_DIR:-$HOME/haxelib-dev/lime-832}"
 HXCPP="${HXCPP_DIR:-$HOME/haxelib/hxcpp/4,3,2}"
 OUT="${OUT:-/tmp/cne-universal}"
@@ -38,97 +34,188 @@ OUT="${OUT:-/tmp/cne-universal}"
 APP="$PROJECT_DIR/export/release/macos/bin/CodenameEngine.app"
 BIN="$APP/Contents/MacOS/CodenameEngine"
 NDLL="$LIME_DIR/ndll/MacArm64/lime-64.ndll"
-TOOLCHAIN="$HXCPP/toolchain/mac-toolchain.xml"
 BUILD_XML="$LIME_DIR/project/Build.xml"
+ARM_BIN="$OUT/CodenameEngine-arm64"
+X64_BIN="$OUT/CodenameEngine-x86_64"
+ARM_NDLL="$OUT/lime-64-arm64.ndll"
+X64_NDLL="$OUT/lime-64-x86_64.ndll"
+UNI_BIN="$OUT/CodenameEngine-universal"
+UNI_NDLL="$OUT/lime-universal.ndll"
+
+DO_BUILD=1
+DO_DMG=0
+DO_VERIFY=""
+KEEP_MODS=0
+NO_SIGN=0
+DMG_PATH=""
+VOLNAME="Codename Engine"
+
+say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+info() { printf '   %s\n' "$1"; }
+warn() { printf '\033[33mwarning:\033[0m %s\n' "$1" >&2; }
+die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+run() {
+	if [ "${DRY_RUN:-0}" = "1" ]; then
+		printf '   [dry-run] %s\n' "$*"
+	else
+		eval "$@"
+	fi
+}
+
+usage() {
+	sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--dmg) DO_DMG=1; shift
+			if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then DMG_PATH="$1"; shift; fi ;;
+		--keep-mods) KEEP_MODS=1; shift ;;
+		--no-sign) NO_SIGN=1; shift ;;
+		--check) DO_BUILD=0; DO_DMG=0; shift ;;
+		--dry-run) DRY_RUN=1; shift ;;
+		--verify) DO_BUILD=0; DO_DMG=0; DO_VERIFY="$2"; shift 2 ;;
+		--reuse) REUSE=1; shift ;;
+		--out) OUT="$2"; shift 2 ;;
+		-h|--help) usage; exit 0 ;;
+		*) die "unknown argument: $1 (try --help)" ;;
+	esac
+done
+
+
+# ------------------------------------------------------------------ preflight
+say "preflight"
+[ -d "$PROJECT_DIR/assets" ] || die "$PROJECT_DIR is not the Codename Engine project"
+[ -f "$BUILD_XML" ] || die "no Lime checkout at $LIME_DIR (project/Build.xml missing)"
+[ -f "$HXCPP/toolchain/mac-toolchain.xml" ] || die "no hxcpp at $HXCPP"
+command -v haxe >/dev/null || die "haxe not on PATH"
+command -v haxelib >/dev/null || die "haxelib not on PATH"
+[ -d "$BGFX_DIR/.build/osx-arm64/bin" ] || die "missing arm64 bgfx archives in $BGFX_DIR/.build/osx-arm64/bin"
+[ -d "$BGFX_DIR/.build/osx-x64/bin" ] || die "missing Intel bgfx archives in $BGFX_DIR/.build/osx-x64/bin"
+info "project   : $PROJECT_DIR"
+info "lime      : $LIME_DIR"
+info "hxcpp     : $HXCPP"
+info "bgfx      : $BGFX_DIR"
+info "slices    : $OUT"
+[ -d "$BGFX_DIR" ] || warn "BGFX_DIR does not exist"
+
+if [ -n "$DO_VERIFY" ]; then
+	say "verify $DO_VERIFY"
+	[ -d "$DO_VERIFY" ] || die "no such app: $DO_VERIFY"
+	VBIN="$DO_VERIFY/Contents/MacOS/CodenameEngine"
+	VNDLL="$DO_VERIFY/Contents/MacOS/lime.ndll"
+	[ -f "$VBIN" ] || die "missing executable in $DO_VERIFY"
+	lipo -archs "$VBIN" | tee "$OUT/verify.txt"
+	lipo -archs "$VNDLL" | tee -a "$OUT/verify.txt"
+	grep -q 'arm64' "$OUT/verify.txt" || die "app executable is not arm64"
+	grep -q 'x86_64' "$OUT/verify.txt" || die "app executable is not x86_64"
+	codesign --verify --deep --strict "$DO_VERIFY" && info "codesign OK"
+	exit 0
+fi
+
+if [ "$DO_BUILD" = "0" ]; then
+	say "check only (no build requested)"
+	[ "${DRY_RUN:-0}" = "1" ] && info "dry-run: would build arm64 pass, x86_64 pass, lipo, install, sign$([ "$DO_DMG" = "1" ] && echo ', package DMG')"
+	info "preflight passed"
+	exit 0
+fi
 
 mkdir -p "$OUT"
-say() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
-die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+[ "${REUSE:-0}" = "1" ] || rm -f "$ARM_BIN" "$X64_BIN" "$ARM_NDLL" "$X64_NDLL" "$UNI_BIN" "$UNI_NDLL"
 
-[ -f "$BUILD_XML" ] || die "no Lime checkout at $LIME_DIR"
-[ -d "$BGFX_DIR/.build/osx-x64/bin" ] || \
-	die "missing Intel bgfx archives; run metal/scripts/build-bgfx.sh first"
-
-cp "$TOOLCHAIN" "$OUT/mac-toolchain.xml.orig"
-trap 'cp "$OUT/mac-toolchain.xml.orig" "$TOOLCHAIN"; sed -i "" "s|\.build/osx-x64/bin|.build/osx-arm64/bin|g" "$BUILD_XML" 2>/dev/null || true' EXIT
+restore_lime() {
+	[ "${DRY_RUN:-0}" = "1" ] && return 0
+	sed -i "" 's|\.build/osx-x64/bin|.build/osx-arm64/bin|g' "$BUILD_XML" 2>/dev/null || true
+}
+trap restore_lime EXIT
 
 # ------------------------------------------------------------------ arm64 pass
-REUSE="${REUSE:-0}"
-if [ "$REUSE" = "1" ] && [ -f "$OUT/CodenameEngine-arm64" ] && [ -f "$OUT/lime-64-arm64.ndll" ]; then
-	say "pass 1/2: arm64 (reusing $OUT)"
-	lipo -archs "$OUT/lime-64-arm64.ndll"
-	lipo -archs "$OUT/CodenameEngine-arm64"
+if [ "${REUSE:-0}" = "1" ] && [ -f "$ARM_BIN" ] && [ -f "$ARM_NDLL" ]; then
+	say "pass 1/3: arm64 (reusing $OUT)"
 else
-	say "pass 1/2: arm64"
-	sed -i "" 's|\.build/osx-x64/bin|.build/osx-arm64/bin|g' "$BUILD_XML"
-	rm -rf "$LIME_DIR/project/obj"
-	haxelib run lime rebuild mac -Dmetal
-	[ -f "$NDLL" ] || die "arm64 lime rebuild produced no $NDLL"
-	haxelib run lime build mac
-	cp "$NDLL" "$OUT/lime-64-arm64.ndll"
-	cp "$BIN"  "$OUT/CodenameEngine-arm64"
-	lipo -archs "$OUT/lime-64-arm64.ndll"
-	lipo -archs "$OUT/CodenameEngine-arm64"
+	say "pass 1/3: arm64"
+	restore_lime
+	run "rm -rf '$LIME_DIR/project/obj'"
+	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal )"
+	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$NDLL" ] || die "arm64 rebuild produced no $NDLL"
+	run "( cd '$PROJECT_DIR' && haxelib run lime build mac )"
+	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$BIN" ] || die "lime build produced no $BIN"
+	run "cp '$NDLL' '$ARM_NDLL'"
+	run "cp '$BIN' '$ARM_BIN'"
 fi
 
 # ------------------------------------------------------------------ x86_64 pass
-if [ "$REUSE" = "1" ] && [ -f "$OUT/CodenameEngine-intel-last" ] && [ -f "$OUT/lime-64-x86_64.ndll" ]; then
-	say "pass 2/2: x86_64 (reusing $OUT)"
-	lipo -archs "$OUT/lime-64-x86_64.ndll"
-	lipo -archs "$OUT/CodenameEngine-intel-last"
+if [ "${REUSE:-0}" = "1" ] && [ -f "$X64_BIN" ] && [ -f "$X64_NDLL" ]; then
+	say "pass 2/3: x86_64 (reusing $OUT)"
 else
-	say "pass 2/2: x86_64"
-	sed -i "" 's|\.build/osx-arm64/bin|.build/osx-x64/bin|g' "$BUILD_XML"
-	rm -rf "$LIME_DIR/project/obj"
-	haxelib run lime rebuild mac -Dmetal -DCNE_X64
-	[ -f "$NDLL" ] || die "Intel lime rebuild produced no $NDLL"
-	cp "$NDLL" "$OUT/lime-64-x86_64.ndll"
-	lipo -archs "$OUT/lime-64-x86_64.ndll"
-
-	# The game-side executable cannot be cross-built through `lime build mac`: Lime reads
-	# the target architecture from the HOST (MacPlatform.hx targetArchitecture), so it
-	# always emits arm64 here.  Build the Intel slice the way MacPlatform would, but with
-	# the x86_64 defines hxcpp needs:
-	#   haxe <hxml> -D HXCPP_CLANG -D HXCPP_M64
-	#   haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64
-	# HXCPP_M64 maps to HXCPP_ARCH=x86_64 in hxcpp/toolchain/mac-toolchain.xml and hxcpp
-	# writes to obj/darwin64, so the arm64 objects from pass 1 stay untouched.
-	[ -f "$PROJECT_DIR/export/release/macos/obj/Build.xml" ] || \
-		die "run the arm64 pass first: the Intel slice reuses its generated cpp/manifest tree"
-	(cd "$PROJECT_DIR" && haxe export/release/macos/haxe/release.hxml -D HXCPP_CLANG -D HXCPP_M64)
-	(cd "$PROJECT_DIR/export/release/macos/obj" && haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64)
-	cp "$PROJECT_DIR/export/release/macos/obj/ApplicationMain" "$OUT/CodenameEngine-intel-last"
+	say "pass 2/3: x86_64"
+	run "rm -rf '$LIME_DIR/project/obj'"
+	run "sed -i '' 's|\\.build/osx-arm64/bin|.build/osx-x64/bin|g' '$BUILD_XML'"
+	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal -DCNE_X64 )"
+	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$NDLL" ] || die "Intel rebuild produced no $NDLL"
+	run "cp '$NDLL' '$X64_NDLL'"
+	run "( cd '$PROJECT_DIR' && haxe export/release/macos/haxe/release.hxml -D HXCPP_CLANG -D HXCPP_M64 )"
+	run "( cd '$PROJECT_DIR/export/release/macos/obj' && haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64 )"
+	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$PROJECT_DIR/export/release/macos/obj/ApplicationMain" ] || die "Intel hxcpp link produced no ApplicationMain"
+	run "cp '$PROJECT_DIR/export/release/macos/obj/ApplicationMain' '$X64_BIN'"
+	restore_lime
 fi
 
-# ------------------------------------------------------------------ merge
-say "merging"
-lipo -create "$OUT/lime-64-arm64.ndll" "$OUT/lime-64-x86_64.ndll" \
-     -output "$OUT/lime-universal.ndll"
-lipo -archs "$OUT/lime-universal.ndll"
-
-if [ "$(lipo -archs "$OUT/CodenameEngine-intel-last")" = "arm64" ]; then
-	echo
-	echo "NOTE: the Intel pass of 'lime build' still produced an arm64 executable,"
-	echo "      so only the .ndll is universal.  That combination is valid: the"
-	echo "      universal .ndll is used by both slices of any future universal binary."
-	echo "      See README 19.3 for making the executable universal too."
-	APP_BIN="$OUT/CodenameEngine-arm64"
-else
-	lipo -create "$OUT/CodenameEngine-arm64" "$OUT/CodenameEngine-intel-last" \
-	     -output "$OUT/CodenameEngine-universal"
-	APP_BIN="$OUT/CodenameEngine-universal"
+if [ "${DRY_RUN:-0}" = "1" ]; then
+	say "dry-run: plan"
+	info "would lipo $ARM_BIN + $X64_BIN -> $UNI_BIN"
+	info "would lipo $ARM_NDLL + $X64_NDLL -> $UNI_NDLL"
+	info "would install into $APP and re-sign"
+	if [ "$DO_DMG" = "1" ]; then info "would package DMG (default under ~/Downloads)"; fi
+	exit 0
 fi
 
-# ------------------------------------------------------------------ install
-say "installing into the bundle"
-cp "$OUT/lime-universal.ndll" "$APP/Contents/MacOS/lime.ndll"
-cp "$APP_BIN" "$BIN"
-# Replacing files inside an .app invalidates its signature; without re-signing,
-# macOS SIGKILLs the process on launch ("Killed: 9").
-codesign --force --deep --sign - "$APP"
-codesign -dv "$APP" 2>&1 | head -2
+# ------------------------------------------------------------------ merge + install
+say "pass 3/3: lipo + install"
+for slice in "$ARM_BIN" "$X64_BIN" "$ARM_NDLL" "$X64_NDLL"; do
+	info "$(basename "$slice"): $(lipo -archs "$slice")"
+done
+lipo -create "$ARM_BIN" "$X64_BIN" -output "$UNI_BIN"
+lipo -create "$ARM_NDLL" "$X64_NDLL" -output "$UNI_NDLL"
+info "exe : $(lipo -archs "$UNI_BIN") ($(stat -f%z "$UNI_BIN") bytes)"
+info "ndll: $(lipo -archs "$UNI_NDLL") ($(stat -f%z "$UNI_NDLL") bytes)"
 
-echo
-echo "done. verify with:"
-echo "  \"$BIN\" | head -1"
-echo "  -> [cne-metal] bgfx renderer: Metal (Metal: yes), WxH, ..."
+[ -d "$APP" ] || die "no app bundle at $APP - run 'haxelib run lime build mac' first"
+cp "$UNI_BIN" "$BIN"
+cp "$UNI_NDLL" "$APP/Contents/MacOS/lime.ndll"
+if [ "$NO_SIGN" = "0" ]; then
+	codesign --force --deep --sign - "$APP"
+	codesign --verify --deep --strict "$APP" && info "codesign OK"
+fi
+
+# ------------------------------------------------------------------ DMG
+if [ "$DO_DMG" = "1" ]; then
+	[ -n "$DMG_PATH" ] || DMG_PATH="$HOME/Downloads/CodenameEngine-Metal-universal.dmg"
+	say "packaging DMG -> $DMG_PATH"
+	WORK="$(mktemp -d "${TMPDIR:-/tmp}/cne-dmg.XXXXXX")"
+	cp -R "$APP" "$WORK/"
+	STAGED="$WORK/$(basename "$APP")"
+	if [ "$KEEP_MODS" = "0" ]; then
+		rm -rf "$STAGED/Contents/Resources/mods"
+		mkdir -p "$STAGED/Contents/Resources/mods"
+		printf '(install mods here, e.g. dustin-mod-master)\\n' > "$STAGED/Contents/Resources/mods/readme.txt"
+	fi
+	if [ "$NO_SIGN" = "0" ]; then
+		codesign --force --deep --sign - "$STAGED"
+		codesign --verify --deep --strict "$STAGED" && info "staged codesign OK"
+	fi
+	ln -s /Applications "$WORK/Applications"
+	rm -f "$DMG_PATH"
+	hdiutil create -volname "$VOLNAME" -srcfolder "$WORK" -ov -format UDZO \
+		-imagekey zlib-level=9 "$DMG_PATH" >/dev/null
+	rm -rf "$WORK"
+	hdiutil verify "$DMG_PATH" | tail -1
+	info "sha256: $(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+	info "size  : $(stat -f%z "$DMG_PATH") bytes"
+	info "path  : $DMG_PATH"
+fi
+
+say "done"
+info "executable: $(lipo -archs "$BIN")"
+info "lime.ndll : $(lipo -archs "$APP/Contents/MacOS/lime.ndll")"
+info "next: ./metal/scripts/make-universal.sh --verify '$APP'"

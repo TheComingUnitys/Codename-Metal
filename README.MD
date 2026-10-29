@@ -199,6 +199,31 @@ python3 metal/scripts/gen_shader_aot.py
 rm -rf export/release/macos/obj/src/lime/graphics/metal/
 ```
 
+### 6.4 Universal（arm64 + x86_64）与 DMG
+
+发布用的 universal 包由脚本一次完成（Lime 的 `lime build mac` 只会按宿主架构出包，
+x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo` 合并）：
+
+```sh
+# 只检查工具链/bgfx 两个架构的库是否存在，不做任何构建
+./metal/scripts/make-universal.sh --check
+
+# 查看完整构建计划（不落地）
+./metal/scripts/make-universal.sh --dry-run --dmg
+
+# 构建 universal app 并打包 DMG（默认不含第三方 mod）
+./metal/scripts/make-universal.sh --dmg ~/Downloads/CodenameEngine-Metal-1.0.1.dmg
+
+# 校验任意已签名 app 的架构与签名
+./metal/scripts/make-universal.sh --verify export/release/macos/bin/CodenameEngine.app
+```
+
+- 可选：`--reuse`（复用 `/tmp/cne-universal` 里已编好的切片）、`--keep-mods`（DMG 保留 mod）、
+  `--no-sign`（跳过 ad-hoc 签名）、`--out DIR`；
+- 打包 DMG 时会先复制 app、剔除 `Contents/Resources/mods` 并**重新 ad-hoc 签名**
+  （删除文件会让原签名失效），再 `hdiutil create/verify` 并打印 SHA-256；
+- 发布流程（提交/tag/Release 资产）见 `docs/RELEASE.md`。
+
 ---
 
 ## 7. 编译检查（不跑游戏）
