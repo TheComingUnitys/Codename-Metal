@@ -202,6 +202,12 @@ namespace metal {
 				int blendEqRGB = 0x8006;  // GL_FUNC_ADD
 				int blendEqAlpha = 0x8006;
 
+				// Recorded for completeness even where bgfx cannot express the state:
+				// glBlendColor (no bgfx equivalent) and glDepthRange (no bgfx parameter).
+				// Both are reported once via ReportUnimplemented when actually changed.
+				float blendColor[4] = {0.f, 0.f, 0.f, 0.f};
+				float depthRange[2] = {0.f, 1.f};
+
 				float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
 				float clearDepth = 1.f;
 				int clearStencil = 0;

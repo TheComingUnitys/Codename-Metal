@@ -1073,6 +1073,7 @@ void lime_gl_get_internalformativ (int target, int internalformat, int pname, in
 // ================================================================= misc state
 
 //@impl lime_gl_clear_depth
+// proto-only: the 2D renderer never calls glClearDepth (view clear flags carry the depth).
 void lime_gl_clear_depth (float depth)
 {
 	CNE_COV ("lime_gl_clear_depth");
@@ -1112,6 +1113,7 @@ void lime_gl_sample_coverage (float val, bool invert)
 }
 
 //@impl lime_gl_blend_barrier
+// proto-only: glBlendBarrierKHR only matters for advanced blend equations, unused here.
 void lime_gl_blend_barrier ()
 {
 	CNE_COV ("lime_gl_blend_barrier");

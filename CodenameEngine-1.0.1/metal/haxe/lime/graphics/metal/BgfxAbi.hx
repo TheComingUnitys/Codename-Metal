@@ -70,6 +70,14 @@ class BgfxAbi
 			+ 'inline float4x4 glsl_matrixCompMult(float4x4 a, float4x4 b) { return float4x4(a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]); }\n'
 			+ 'inline float3x3 glsl_matrixCompMult(float3x3 a, float3x3 b) { return float3x3(a[0] * b[0], a[1] * b[1], a[2] * b[2]); }\n'
 			+ 'inline float2x2 glsl_matrixCompMult(float2x2 a, float2x2 b) { return float2x2(a[0] * b[0], a[1] * b[1]); }\n'
+			// GLSL matrix constructors that change dimension (mat4(mat3) pads identity,
+			// mat3(mat4) truncates).  MSL has no such implicit conversion.
+			+ 'inline float4x4 glsl_mat4_from_mat3(float3x3 m) { return float4x4(float4(m[0], 0.0), float4(m[1], 0.0), float4(m[2], 0.0), float4(0.0, 0.0, 0.0, 1.0)); }\n'
+			+ 'inline float4x4 glsl_mat4_from_mat2(float2x2 m) { return float4x4(float4(m[0], 0.0, 0.0), float4(m[1], 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 0.0, 0.0, 1.0)); }\n'
+			+ 'inline float3x3 glsl_mat3_from_mat4(float4x4 m) { return float3x3(m[0].xyz, m[1].xyz, m[2].xyz); }\n'
+			+ 'inline float3x3 glsl_mat3_from_mat2(float2x2 m) { return float3x3(float3(m[0], 0.0), float3(m[1], 0.0), float3(0.0, 0.0, 1.0)); }\n'
+			+ 'inline float2x2 glsl_mat2_from_mat4(float4x4 m) { return float2x2(m[0].xy, m[1].xy); }\n'
+			+ 'inline float2x2 glsl_mat2_from_mat3(float3x3 m) { return float2x2(m[0].xy, m[1].xy); }\n'
 			// MSL has no radians()/degrees() (GLSL does); T(...) keeps vectors working.
 			+ 'template <typename T> inline T glsl_radians(T deg) { return deg * T(0.017453292519943295); }\n'
 			+ 'template <typename T> inline T glsl_degrees(T rad) { return rad * T(57.29577951308232); }\n'

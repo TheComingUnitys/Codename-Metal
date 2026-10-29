@@ -984,8 +984,18 @@ namespace lime {
 			}
 		};
 
+		static uint32_t SourceComponents (int format);
+
 		uint64_t ToBgfxFormat (int internalFormat, int format, int type)
 		{
+			// Unknown client formats fall back to RGBA8; say so once instead of silently
+			// producing wrong colours (the texture upload also assumes 4 bytes per pixel
+			// for formats it does not recognise).
+			if (format != 0 && SourceComponents (format) == 0)
+			{
+				MetalContext::ReportUnimplemented ("lime_gl_tex_image_2d (unrecognised client pixel format; assuming RGBA8 / 4 bytes per pixel)");
+			}
+
 			// bgfx/Metal cannot swizzle while uploading, so a BGRA client upload has to
 			// become a real BGRA8 texture: Metal's BGRA8Unorm keeps the byte order and the
 			// sampler returns the same .rgba vector GL produced by converting on upload.
@@ -4998,6 +5008,8 @@ namespace lime {
 			return gActiveView;
 		}
 
+		// proto-only: kept for the direct-Metal replay prototype; the GL-shaped renderer
+		// derives its views per frame from ActiveViewForTarget() instead.
 		uint16_t ViewForFramebuffer (int framebufferId)
 		{
 			if (framebufferId == 0) return 0;
@@ -6972,7 +6984,18 @@ namespace lime {
 	void lime_gl_blend_color (float r, float g, float b, float a)
 	{
 		CNE_COV ("lime_gl_blend_color");
-		(void)r; (void)g; (void)b; (void)a;
+		MetalContext::state.blendColor[0] = r;
+		MetalContext::state.blendColor[1] = g;
+		MetalContext::state.blendColor[2] = b;
+		MetalContext::state.blendColor[3] = a;
+
+		// bgfx's state word has BLEND_FACTOR/INV_FACTOR slots but no blend-colour setter in
+		// this version, so constant blend factors cannot be reproduced.  Report it once
+		// instead of silently ignoring the call (decision recorded in docs/METAL-TODO.md).
+		if (r != 0.f || g != 0.f || b != 0.f || a != 0.f)
+		{
+			MetalContext::ReportUnimplemented ("lime_gl_blend_color (bgfx v167 exposes no blend-colour setter; constant blend factors fall back to the normal factors)");
+		}
 	}
 
 	//@impl lime_gl_color_mask
@@ -7003,7 +7026,15 @@ namespace lime {
 	void lime_gl_depth_rangef (float zNear, float zFar)
 	{
 		CNE_COV ("lime_gl_depth_rangef");
-		(void)zNear; (void)zFar;
+		MetalContext::state.depthRange[0] = zNear;
+		MetalContext::state.depthRange[1] = zFar;
+
+		// bgfx has no depth-range parameter (Metal's viewport depth range is not exposed).
+		// 2D rendering never uses it; report once so a 3D/mod path does not fail silently.
+		if (zNear != 0.f || zFar != 1.f)
+		{
+			MetalContext::ReportUnimplemented ("lime_gl_depth_rangef (bgfx has no depth-range parameter; the default [0,1] is used)");
+		}
 	}
 
 	//@impl lime_gl_cull_face

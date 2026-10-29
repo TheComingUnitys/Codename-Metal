@@ -130,6 +130,22 @@ python3 ./metal/tools/native_replay/diff.py /tmp/cne-shot/frame.raw /tmp/replay.
 | `CNE_METAL_DUMP_WORLD` / `SHOW_WORLD_RT` / `SHOW_WORLDCORNER` | 世界 RT 的调试显示 |
 | `CNE_METAL_UVLOG`/`FBO_FLIP`/`COMPOSITE_FLIP`/`FLIP_COMPOSITE` | 翻转判定实验组（正常路径已自动判定） |
 
+### 4.1 bgfx 无法表达 / 已决策不实现的 GL 状态
+
+以下状态现在都会**记录进 `MetalContext::state` 并只告警一次**（`ReportUnimplemented`），
+不再静默忽略；决策是不实现（2D 内容不触发，3D 需求出现时再评估）：
+
+| GL 状态 | 原因 / 当前行为 |
+| --- | --- |
+| `glBlendColor` | bgfx v167 无 blend-colour setter；常量混合因子回退为普通因子 |
+| `glDepthRange` | bgfx 无 depth-range 参数；固定 [0,1] |
+| `glPolygonOffset` | bgfx 状态无 depth-bias 项 |
+| `glLineWidth` (>1) | Metal/bgfx 只栅格化 1px 线 |
+| MSAA / `glSampleCoverage` | 未启用 MSAA，覆盖恒满 |
+| 嵌套 mask 的 stencil write-mask | bgfx v167 的 stencil 字没有 write-mask 字段 |
+| 未知 client 像素格式 | 回退 RGBA8 / 4 B/px 并告警（窄格式已展开） |
+| 离屏 view id > 199/帧 | 复用 view 199 并告警一次 |
+
 完整列表（约 70 个）：
 
 ```sh

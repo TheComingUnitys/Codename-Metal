@@ -22,7 +22,7 @@ built and debugged.
 - **Metal 渲染**：所有 2D 渲染经 `lime_gl_*` GL 形状 API 仿真层 → `bgfx` Metal 后端提交；
   进程内没有 GL context，也没有 GL 交换链。
 - **着色器 AOT**：构建期把 GLSL 翻译成 Metal Shading Language 并预编译为 `.metallib`
-  （当前 116 个 stage 中 113 个带预编译库；运行时零 GLSL 翻译）。
+  （当前 116 个 stage 中 114 个带预编译库；运行时零 GLSL 翻译）。
 - **双路径**：Lime 的 `lime_gl_*` CFFI 兼容层 + 更快的原生 `cne_metal_*` 路径（默认启用）。
 - **可诊断**：`CNE_METAL_PROFILE`、`CNE_METAL_DRAWPROBE`、`CNE_METAL_COVERAGE`、
   `CNE_METAL_HITCH` 等 70 个环境变量开关（见 §8）。
@@ -191,7 +191,7 @@ haxelib run lime build mac
 `apply.sh` 会在构建前自动调用 `metal/scripts/gen_shader_aot.py`：
 
 - 枚举 OpenFL/Flixel/CNE/mod 的全部 GLSL → 翻译成 MSL → 编译 `.metallib`；
-- 生成 `metal/haxe/lime/graphics/metal/ShaderAotCache.hx`（约 2.0 MB，含 113 个预编译库）；
+- 生成 `metal/haxe/lime/graphics/metal/ShaderAotCache.hx`（约 2.0 MB，含 114 个预编译库）；
 - 修改翻译器或 shader 后如未生效，删除缓存强制重建：
 
 ```sh
@@ -247,7 +247,7 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 ./verify.sh --with-native   # 额外跑上面的 C++/bgfx 编译检查
 ```
 
-- **翻译器单测**：`TestTranslate`（40 项）+ `TestTranslateCompat`（38 项），覆盖数组 varying、
+- **翻译器单测**：`TestTranslate`（40 项）+ `TestTranslateCompat`（53 项），覆盖数组 varying、
   数组构造、截断式向量/标量构造、标量/无长度 uniform 数组、swizzle 复合赋值、内置函数映射、
   原型提升、重载参数折叠等规则；
 - `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
@@ -256,7 +256,7 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 - `metal/tools/frame_diff.py --selftest`：截图比对工具的自检（纯合成帧，无需 app）；
   真正的像素回归用 `metal/scripts/pixel-regression.sh --app <app> --scenario menu`
   （先 `--update` 生成金帧；金帧与 GPU/驱动相关，见 `metal/autotests/README.md`）；
-- `check-docs.py`：校验 README / METAL-TODO 里的 116/113 等数字与缓存一致，防止文档过期；
+- `check-docs.py`：校验 README / METAL-TODO 里的 116/114 等数字与缓存一致，防止文档过期；
 - CI：`.github/workflows/metal-verify.yml` 在 macOS 上跑翻译器单测 + 文档校验
   （AOT 审计需要项目的 haxelib 依赖，留给本地 `./verify.sh`）。
 
@@ -319,10 +319,12 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 
 - 架构：OpenFL 仍走 GL 形状 API（`lime_gl_*`），可做 Metal-native `Context3D`、再评估去掉 bgfx
   （方案与 A/B 原型见 `metal/audit/openfl-native.md`、`metal/tools/native_replay/`）；
-- 3 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod 源码问题，需上游修复；覆盖 113/116）；
+- 2 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod 源码问题，需上游修复；覆盖 114/116）；
 - `DisplayObject.mask` 引擎侧已接线（stencil + colorMask + renderbuffer D24S8），待运行时验证；
   `readPixels`（截图/读回）仍未实现；
-- 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现。
+- 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现；
+- bgfx 无法表达的状态（`blendColor`/`depthRange`/`polygonOffset`/`lineWidth>1`/MSAA/嵌套 mask 的
+  stencil write-mask 等）已**记录并一次性告警**，决策为不实现（详见 `docs/DIAGNOSTICS.md` §4.1）。
 
 ---
 

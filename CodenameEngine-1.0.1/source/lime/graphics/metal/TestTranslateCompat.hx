@@ -77,6 +77,9 @@ class TestTranslateCompat
 		testTruncatingConstructors();
 		testBuiltins();
 		testPrototypes();
+		testMutableGlobals();
+		testMatrixConstructors();
+		testPreprocessorEdges();
 
 		Sys.println('');
 		Sys.println('checks: ' + checks + ', failures: ' + failures.length);
@@ -244,4 +247,67 @@ void main() {
 		check('overloads: no errors', o.errors.length == 0, o.errors.join('; '));
 		check('overloads: no duplicated scope parameter', strip(o.code).indexOf('_mtl_u,constantXlatMtlUniforms&_mtl_u') < 0, o.code);
 	}
+
+	static function testMutableGlobals():Void
+	{
+		Sys.println('-- file-scope mutable globals --');
+		var r = frag('
+float scratch;
+float bump(float x) {
+	scratch = scratch + x;
+	return scratch;
+}
+void main() {
+	scratch = 0.0;
+	gl_FragColor = vec4(bump(1.0));
+}');
+		check('mutable global: no errors', r.errors.length == 0, r.errors.join('; '));
+		check('mutable global: struct emitted', has(r.code, 'struct XlatMtlGlobals'), r.code);
+		check('mutable global: member declared', has(r.code, 'float scratch;'), r.code);
+		check('mutable global: instance declared in main', has(r.code, 'XlatMtlGlobals xlatGlobals;'), r.code);
+		check('mutable global: helper receives it by reference',
+			has(r.code, 'thread XlatMtlGlobals& xlatGlobals'), r.code);
+		check('mutable global: access rewritten', has(r.code, 'xlatGlobals.scratch'), r.code);
+
+		var init = frag('
+vec4 tint = vec4(0.5, 0.25, 1.0, 1.0);
+void main() {
+	gl_FragColor = tint;
+}');
+		check('mutable global + initializer: no errors', init.errors.length == 0, init.errors.join('; '));
+		check('mutable global + initializer: assignment in main',
+			has(init.code, 'xlatGlobals.tint = float4 (0.5, 0.25, 1.0, 1.0)'), init.code);
+	}
+
+	static function testMatrixConstructors():Void
+	{
+		Sys.println('-- matrix dimension-changing constructors --');
+		fragHas('mat4(mat3)', '
+void main() {
+	mat4 identityMat = mat4(1.0);
+	mat3 m3 = mat3(identityMat);
+	mat4 m4 = mat4(m3);
+	gl_FragColor = vec4(m4[0].xyz, 1.0);
+}', 'glsl_mat4_from_mat3(m3)');
+		fragHas('mat3(mat4)', '
+void main() {
+	mat4 m4 = mat4(1.0);
+	mat3 m3 = mat3(m4);
+	gl_FragColor = vec4(m3[0], 1.0);
+}', 'glsl_mat3_from_mat4(m4)');
+	}
+
+	static function testPreprocessorEdges():Void
+	{
+		Sys.println('-- preprocessor edge cases --');
+		var multi = Preprocessor.run('#define ADD(a, b) \\\n ((a) + (b))\nint v = ADD(1, 2);\n', []);
+		check('pp: line-continued macro expands', has(multi, '((1)+(2))'), multi);
+
+		var lined = Preprocessor.run('#line 42\nfloat x = 1.0;\n', []);
+		check('pp: #line is accepted', !has(lined, '#line'), lined);
+
+		var nested = Preprocessor.run('#define A 1\n#if defined(A) && !defined(B)\nyes\n#else\nno\n#endif\n', []);
+		check('pp: #if defined(A) && !defined(B)', has(nested, 'yes') && !has(nested, 'no'), nested);
+	}
+
 }

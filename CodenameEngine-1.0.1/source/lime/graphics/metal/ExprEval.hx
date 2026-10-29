@@ -6,10 +6,14 @@ class ExprEval
 {
 	var toks:Array<Token>;
 	var pos:Int = 0;
+	// `defined(NAME)` cannot be answered by the expression grammar alone; the
+	// preprocessor supplies the macro table through this callback.
+	var isDefined:String->Bool;
 
-	public function new(source:String)
+	public function new(source:String, ?defined:String->Bool)
 	{
 		toks = Lexer.lex(source);
+		isDefined = defined;
 	}
 
 	public function run():Int
@@ -54,8 +58,12 @@ class ExprEval
 		{
 			if (t.text == 'defined')
 			{
-				// handled by the caller through macro expansion; treat as 0
-				return 0;
+				// defined(NAME) / defined NAME -> 1 when the macro exists
+				var hasParen = eat('(');
+				var nameTok = next();
+				var name = (nameTok != null) ? nameTok.text : '';
+				if (hasParen) eat(')');
+				return (isDefined != null && isDefined(name)) ? 1 : 0;
 			}
 			return 0;
 		}

@@ -93,6 +93,11 @@ class GLSLToMSL
 	// Local/parameter types, collected with a light pre-pass.  Needed for GLSL's
 	// truncating vector constructors such as `vec2(result)` where result is vec4.
 	var localTypes = new StringMap<String> ();
+
+	// File-scope variables that are neither const nor uniforms: MSL forbids mutable
+	// program-scope variables, so they are lifted into a per-invocation struct that is
+	// threaded through the helper functions (injectHelperScope) and declared in main.
+	var mutableGlobals:Array<{name:String, mslType:String, init:String}> = [];
 	var uniforms:Array<UniformInfo> = [];
 	var samplers:Array<SamplerInfo> = [];
 	var uniformSize:Int = 0;
@@ -211,6 +216,107 @@ class GLSLToMSL
 	/** Records declared identifier types (locals, parameters and globals) so the emitter
 	    can translate GLSL's truncating vector constructors (\`vec2(vec4expr)\`).
 	**/
+
+	/** Translates a constant-expression token slice (used for mutable-global
+	    initializers, which GLSL restricts to constant expressions). */
+	function translateConstExpr (toks:Array<Token>, from:Int, to:Int):String
+	{
+		var sb = new StringBuf();
+		for (k in from...to)
+		{
+			var t = toks[k];
+			if (t.kind == Ident)
+			{
+				if (isBasicType (t.text)) sb.add(mslType (t.text));
+				else if (symbols.exists (t.text)) sb.add(symbols.get (t.text));
+				else sb.add(t.text);
+			}
+			else
+			{
+				sb.add(TokenText.of (t));
+			}
+		}
+		return StringTools.trim (sb.toString ());
+	}
+
+	/** Lifts file-scope mutable declarations (`float scratch;`) into `XlatMtlGlobals`.
+	    Declarations with an initializer keep the existing `constant` path (their value
+	    must be a constant expression today, which matches the engine corpus). */
+	function collectMutableGlobals (toks:Array<Token>):Void
+	{
+		var i = 0;
+		var depth = 0;
+		var parens = 0;
+		while (i < toks.length)
+		{
+			var t = toks[i];
+			if (t.kind == Punct)
+			{
+				if (t.text == '{') depth++;
+				else if (t.text == '}') depth--;
+				else if (t.text == '(') parens++;
+				else if (t.text == ')') parens--;
+				i++;
+				continue;
+			}
+
+			if (depth == 0 && parens == 0 && t.kind == Ident && isBasicType (t.text) && !isSamplerType (t.text))
+			{
+				var prev = previousSignificant (toks, i);
+				var atStatementStart = prev < 0
+					|| (toks[prev].kind == Punct && (toks[prev].text == ';' || toks[prev].text == '}' || toks[prev].text == '{'));
+				var n1 = nextSignificant (toks, i);
+				var n2 = (n1 >= 0) ? nextSignificant (toks, n1) : -1;
+				var hasInit = n2 >= 0 && toks[n2].kind == Punct && toks[n2].text == '=';
+				var stmtEnd = -1;
+				var initStart = -1;
+
+				if (n1 >= 0 && toks[n1].kind == Ident && toks[n1].text != 'main')
+				{
+					if (hasInit)
+					{
+						initStart = nextSignificant (toks, n2);
+						var d = 0;
+						var k = initStart;
+						while (k >= 0 && k < toks.length)
+						{
+							var tk = toks[k];
+							if (tk.kind == Punct)
+							{
+								if (tk.text == '(' || tk.text == '[' || tk.text == '{') d++;
+								else if (tk.text == ')' || tk.text == ']' || tk.text == '}') d--;
+								else if (tk.text == ';' && d == 0) { stmtEnd = k; break; }
+							}
+							k = nextSignificant (toks, k);
+						}
+					}
+					else if (n2 >= 0 && toks[n2].kind == Punct && toks[n2].text == ';')
+					{
+						stmtEnd = n2;
+					}
+				}
+
+				if (atStatementStart && stmtEnd > 0)
+				{
+					var name = toks[n1].text;
+					var init = (initStart >= 0 && initStart < stmtEnd)
+						? translateConstExpr (toks, initStart, stmtEnd) : '';
+					mutableGlobals.push ({name: name, mslType: mslType (t.text), init: init});
+					symbols.set (name, 'xlatGlobals.' + name);
+
+					for (k in i...stmtEnd + 1)
+					{
+						toks[k].kind = Ident;
+						toks[k].text = '';
+					}
+					i = stmtEnd + 1;
+					continue;
+				}
+			}
+			i++;
+		}
+	}
+
 	static function collectDeclaredTypes (toks:Array<Token>, into:StringMap<String>):Void
 	{
 		var i = 0;
@@ -237,6 +343,7 @@ class GLSLToMSL
 		renameShadowedParameters(toks);
 		convertArrayConstructors(toks);
 		collectDeclaredTypes(toks, localTypes);
+		collectMutableGlobals(toks);
 		var body = emit(toks);
 		var code = assemble(body);
 
@@ -1632,6 +1739,16 @@ class GLSLToMSL
 		}
 		sb.add('};\n\n');
 
+  if (mutableGlobals.length > 0)
+  {
+    sb.add('struct XlatMtlGlobals\n{\n');
+    for (g in mutableGlobals)
+    {
+      sb.add('\t' + g.mslType + ' ' + g.name + ';\n');
+    }
+    sb.add('};\n\n');
+  }
+
 		// varyings struct (vertex out / fragment in)
 		sb.add('struct XlatMtlVaryings\n{\n');
 		sb.add('\tfloat4 position [[position]];\n');
@@ -1707,8 +1824,17 @@ class GLSLToMSL
 		if (braceOpen >= 0 && braceClose > braceOpen)
 		{
 			var declType = isVertex ? 'XlatMtlVaryings' : 'XlatMtlFragOut';
+			var globalsDecl = '';
+			if (mutableGlobals.length > 0)
+			{
+				globalsDecl = '\n\tXlatMtlGlobals xlatGlobals;';
+				for (g in mutableGlobals)
+				{
+					if (g.init != '') globalsDecl += '\n\txlatGlobals.' + g.name + ' = ' + g.init + ';';
+				}
+			}
 			finalOut = finalOut.substring(0, braceOpen + 1)
-				+ '\n\t' + declType + ' xlatOut;'
+				+ '\n\t' + declType + ' xlatOut;' + globalsDecl
 				+ finalOut.substring(braceOpen + 1, braceClose)
 				+ clipSpaceFixup()
 				+ '\treturn xlatOut;\n'
@@ -1723,6 +1849,7 @@ class GLSLToMSL
 		finalOut = rewriteArrayVaryingAccess(finalOut);
 		finalOut = rewriteTruncatingConstructors(finalOut);
 		finalOut = rewriteScalarUniformArrayAccess(finalOut);
+		finalOut = rewriteMatrixConstructorCasts(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -1958,6 +2085,38 @@ class GLSLToMSL
 	}
 
 	/** Repeated regex replacement (Haxe EReg.replace() has no callback/backreferences). */
+	/** GLSL allows matrix dimension changes in constructors: mat4(mat3) pads the
+	    identity, mat3(mat4) truncates.  MSL has no such conversion, so rewrite the
+	    generated floatNxN(<matrix var>) to a helper call. */
+	function rewriteMatrixConstructorCasts (code:String):String
+	{
+		var out = code;
+		for (name in localTypes.keys ())
+		{
+			var srcDim = matrixDim (localTypes.get (name));
+			if (srcDim == 0) continue;
+			for (dstDim in [2, 3, 4])
+			{
+				if (dstDim == srcDim) continue;
+				var target = 'float' + Std.string (dstDim) + 'x' + Std.string (dstDim);
+				out = replaceTextual (out, target + '\\s*\\(\\s*' + name + '\\s*\\)',
+					'glsl_mat' + Std.string (dstDim) + '_from_mat' + Std.string (srcDim) + '(' + name + ')');
+			}
+		}
+		return out;
+	}
+
+	static function matrixDim (glslType:String):Int
+	{
+		return switch (glslType)
+		{
+			case 'mat2', 'mat2x2': 2;
+			case 'mat3', 'mat3x3': 3;
+			case 'mat4', 'mat4x4': 4;
+			default: 0;
+		};
+	}
+
 	function replaceTextual (code:String, pattern:String, replacement:String):String
 	{
 		var re = new EReg (pattern, 'g');
@@ -2259,6 +2418,7 @@ class GLSLToMSL
 		var needsU:Array<Bool> = [];
 		var needsIn:Array<Bool> = [];
 		var needsOut:Array<Bool> = [];
+		var needsG:Array<Bool> = [];
 		var needS:Array<Array<Bool>> = [];
 		var ownS:Array<Array<Bool>> = [];
 		var defParen:Array<Int> = [];
@@ -2327,6 +2487,7 @@ class GLSLToMSL
 				needsU.push(body.indexOf('_mtl_u') >= 0);
 				needsIn.push(body.indexOf('xlatIn') >= 0);
 				needsOut.push(body.indexOf('xlatOut') >= 0);
+				needsG.push(body.indexOf('xlatGlobals') >= 0);
 				ownS.push(owns);
 				needS.push(wants);
 				defParen.push(paren);
@@ -2355,6 +2516,7 @@ class GLSLToMSL
 					if (needsU[b] && !needsU[a]) { needsU[a] = true; changed = true; }
 					if (needsIn[b] && !needsIn[a]) { needsIn[a] = true; changed = true; }
 					if (needsOut[b] && !needsOut[a]) { needsOut[a] = true; changed = true; }
+					if (needsG[b] && !needsG[a]) { needsG[a] = true; changed = true; }
 
 					for (s in 0...samplers.length)
 					{
@@ -2391,6 +2553,7 @@ class GLSLToMSL
 			if (needsU[k]) appendBoth(uParam, '_mtl_u');
 			if (needsIn[k]) appendBoth(inParam, 'xlatIn');
 			if (needsOut[k]) appendBoth(outParam, 'xlatOut');
+			if (needsG[k]) appendBoth('thread XlatMtlGlobals& xlatGlobals', 'xlatGlobals');
 
 			for (s in 0...samplers.length)
 			{
@@ -2462,10 +2625,12 @@ class GLSLToMSL
 		out = StringTools.replace (out, ', _mtl_u, constant XlatMtlUniforms& _mtl_u', ', constant XlatMtlUniforms& _mtl_u');
 		out = StringTools.replace (out, ', xlatIn, XlatMtlVaryings xlatIn', ', XlatMtlVaryings xlatIn');
 		out = StringTools.replace (out, ', xlatOut, thread XlatMtlVaryings& xlatOut', ', thread XlatMtlVaryings& xlatOut');
+		out = StringTools.replace (out, ', xlatGlobals, thread XlatMtlGlobals& xlatGlobals', ', thread XlatMtlGlobals& xlatGlobals');
 		out = StringTools.replace (out, ', xlatOut, thread XlatMtlFragOut& xlatOut', ', thread XlatMtlFragOut& xlatOut');
 		out = StringTools.replace (out, ', _mtl_u, _mtl_u)', ', _mtl_u)');
 		out = StringTools.replace (out, ', xlatIn, xlatIn)', ', xlatIn)');
 		out = StringTools.replace (out, ', xlatOut, xlatOut)', ', xlatOut)');
+		out = StringTools.replace (out, ', xlatGlobals, xlatGlobals)', ', xlatGlobals)');
 
 		return out;
 	}

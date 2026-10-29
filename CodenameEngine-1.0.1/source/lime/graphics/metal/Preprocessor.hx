@@ -220,32 +220,94 @@ class Preprocessor
 
 	function defineMacro(text:String):Void
 	{
-		var sp = indexOfSpace(text);
-		var signature = (sp < 0) ? text : text.substring(0, sp);
-		var macroBody = (sp < 0) ? '' : StringTools.trim(text.substring(sp + 1));
-
-		var paren = signature.indexOf('(');
+		// Function-like only when '(' immediately follows the macro name ('NAME(');
+		// '#define TWO_PI (PI * 2)' is object-like even though the body starts with '('.
+		var nameEnd = 0;
+		while (nameEnd < text.length)
+		{
+			var c = text.charCodeAt(nameEnd);
+			if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95)) break;
+			nameEnd++;
+		}
+		var paren = (nameEnd < text.length && text.charAt(nameEnd) == '(') ? nameEnd : -1;
 		if (paren < 0)
 		{
-			macros.set(signature, {params: null, body: macroBody});
+			var sp = indexOfSpace(text);
+			var name = (sp < 0) ? StringTools.trim(text) : StringTools.trim(text.substring(0, sp));
+			var body = (sp < 0) ? '' : StringTools.trim(text.substring(sp + 1));
+			macros.set(name, {params: null, body: body});
 			return;
 		}
 
-		var name = signature.substring(0, paren);
-		var paramsPart = signature.substring(paren + 1);
-		if (paramsPart.length > 0 && paramsPart.charAt(paramsPart.length - 1) == ')')
+		// function-like macro: the parameter list ends at the matching ')', *not* at the
+		// first space -- 'ADD(a, b) ((a) + (b))' contains a space inside the parameters,
+		// which used to split the signature at 'ADD(a,' and garble the expansion.
+		var depth = 0;
+		var close = -1;
+		for (i in paren...text.length)
 		{
-			paramsPart = paramsPart.substring(0, paramsPart.length - 1);
+			var c = text.charAt(i);
+			if (c == '(') depth++;
+			else if (c == ')')
+			{
+				depth--;
+				if (depth == 0) { close = i; break; }
+			}
 		}
-		var params = paramsPart.length == 0 ? [] : paramsPart.split(',').map(function(s) return StringTools.trim(s));
-		macros.set(name, {params: params, body: macroBody});
+		if (close < 0)
+		{
+			var sp = indexOfSpace(text);
+			var name = (sp < 0) ? StringTools.trim(text) : StringTools.trim(text.substring(0, sp));
+			macros.set(name, {params: [], body: (sp < 0) ? '' : StringTools.trim(text.substring(sp + 1))});
+			return;
+		}
+
+		var name = StringTools.trim(text.substring(0, paren));
+		var paramsPart = StringTools.trim(text.substring(paren + 1, close));
+		var body = StringTools.trim(text.substring(close + 1));
+		var params:Array<String> = paramsPart.length == 0 ? [] : paramsPart.split(',').map(function(s) return StringTools.trim(s));
+		macros.set(name, {params: params, body: body});
 	}
 
 	// ---------------------------------------------------------------- conditional evaluation
 
 	function evalCondition(expr:String):Bool
 	{
-		return new ExprEval(expandLine(expr)).run() != 0;
+		// defined(X) must be resolved *before* macro expansion, otherwise 'X' itself is
+		// replaced by its body and defined() sees a number/expression.
+		return new ExprEval(expandLine(substituteDefined(expr)), function(name) return macros.exists(StringTools.trim(name))).run() != 0;
+	}
+
+	function substituteDefined(expr:String):String
+	{
+		var toks = Lexer.lex(expr);
+		var out = new StringBuf();
+		var i = 0;
+		while (i < toks.length && toks[i].kind != Eof)
+		{
+			var t = toks[i];
+			if (t.kind == Ident && t.text == 'defined')
+			{
+				var j = i + 1;
+				while (j < toks.length && toks[j].kind == Newline) j++;
+				var hasParen = j < toks.length && toks[j].kind == Punct && toks[j].text == '(';
+				if (hasParen) j++;
+				while (j < toks.length && toks[j].kind == Newline) j++;
+				var name = (j < toks.length && toks[j].kind == Ident) ? toks[j].text : '';
+				if (j < toks.length && toks[j].kind == Ident) j++;
+				if (hasParen)
+				{
+					while (j < toks.length && toks[j].kind == Newline) j++;
+					if (j < toks.length && toks[j].kind == Punct && toks[j].text == ')') j++;
+				}
+				out.add(macros.exists(name) ? '1 ' : '0 ');
+				i = j;
+				continue;
+			}
+			out.add(TokenText.of(t));
+			i++;
+		}
+		return out.toString();
 	}
 
 	// ---------------------------------------------------------------- expansion
