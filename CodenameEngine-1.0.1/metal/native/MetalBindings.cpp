@@ -3240,7 +3240,8 @@ namespace lime {
 			// shader.pixelZoom = camera zoom each frame).  The world matrices are un-zoomed in
 			// cne_metal_uniform_matrix4fv so the world reaches the render target at its normal
 			// size.  O(1): the location was cached when the program was configured.
-			// CNE_METAL_PIXEL_ZOOM_FIX=0 disables the compensation for A/B testing.
+			// The compensation itself is opt-in (CNE_METAL_PIXEL_ZOOM_FIX=1): with the
+			// SHOW_WORLD_RT work-around off, the composite already magnifies pixel-art worlds.
 			{
 				ProgramData* program = CurrentProgram ();
 				if (program != nullptr && program->pixelZoomLocation == location)

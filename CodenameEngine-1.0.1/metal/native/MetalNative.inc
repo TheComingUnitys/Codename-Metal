@@ -604,19 +604,17 @@
 		gMatrixUniformProgram = CurrentProgram ();
 		gMatrixUniformIndex = location - 1;
 
-			// [cne-zoomfix] CNE_METAL_PIXEL_ZOOM_FIX=1: pixel-art songs render the world with
-			// camera zoom = 1/daPixelZoom and rely on pixelZoomShader to magnify it back.  The
-			// screen-shader chain does not deliver that magnification in this bgfx port, so
-			// un-zoom the world matrices instead (right-multiply by 1/zoom, i.e. scale about
-			// the screen centre).  Only passes that do not themselves sample a render target
-			// (the world pass) are adjusted.
-			// On by default (pixel-art songs need it); CNE_METAL_PIXEL_ZOOM_FIX=0 turns it off,
-			// =1 forces it on (identical to the default).
+			// [cne-zoomfix] CNE_METAL_PIXEL_ZOOM_FIX=1 (debug, OFF by default): pixel-art songs
+			// render the world with camera zoom = 1/daPixelZoom and rely on pixelZoomShader to
+			// magnify it back.  This compensation was needed while the SHOW_WORLD_RT work-around
+			// bypassed the filter output; that work-around is now OFF by default (the composite
+			// samples the screen-shader chain, which does magnify).  Leaving the compensation
+			// on double-scaled any song whose camera still writes pixelZoom, making the world
+			// (and mod stage) much too large.  Env =1 restores the old behaviour for A/B only.
 			static const bool zoomFixEnabled = [] ()
 			{
 				const char* v = std::getenv ("CNE_METAL_PIXEL_ZOOM_FIX");
-				if (v == nullptr) return true;
-				return !(v[0] == '0' && v[1] == '\0');
+				return v != nullptr && v[0] == '1' && v[1] == '\0';
 			} ();
 			// The game uploads pixelZoom only when its screen-shader pass draws, which happens
 			// *after* the world draws of the same frame - so the value recorded for frame N is
