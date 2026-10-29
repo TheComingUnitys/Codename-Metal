@@ -43,8 +43,11 @@ else
 	info "lime: $LIME_DIR"
 
 	# The whole GL surface must live in exactly one file, which the Metal backend replaces.
+	# The Metal replacers (MetalBindings.cpp / MetalContext.cpp) define the same GL entry
+	# points, so they are expected to mention these names; only non-Metal files count.
 	gl_files=$(grep -rl "glDrawElements\|glTexImage2D\|glBindFramebuffer" \
-		"$LIME_DIR/project/src" --include=*.cpp --include=*.c 2>/dev/null | sed "s|$LIME_DIR/||")
+		"$LIME_DIR/project/src" --include=*.cpp --include=*.c 2>/dev/null \
+		| grep -v "graphics/metal/" | sed "s|$LIME_DIR/||")
 	count=$(printf '%s\n' "$gl_files" | grep -c . )
 	if [ "$count" = "1" ] && printf '%s' "$gl_files" | grep -q "graphics/opengl/OpenGLBindings.cpp"; then
 		pass "all GL calls live in graphics/opengl/OpenGLBindings.cpp (replaced by MetalBindings.cpp)"
@@ -173,8 +176,8 @@ fi
 
 head2 "5. runtime failure visibility"
 
-if grep -q "Log.error" "$HAXE_CP/lime/graphics/metal/MetalShaderBridge.hx" 2>/dev/null; then
-	pass "a shader that fails to translate is reported loudly (Log.error), not silently dropped"
+if grep -qE "Log\.error|function error\(" "$HAXE_CP/lime/graphics/metal/ShaderAot.hx" 2>/dev/null; then
+	pass "a shader that fails to translate is reported loudly (error()), not silently dropped"
 else
 	fail "translation failures are not logged"
 fi
