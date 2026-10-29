@@ -197,7 +197,9 @@
 | 项 | 现状 | 建议 |
 | --- | --- | --- |
 | 诊断开关过多 | 共 **70** 个 `CNE_METAL_*` 环境变量散落在 native/haxe/source | 收敛为统一 `CNE_METAL_DIAG=<mask>` 或配置文件；保留 `DRAWPROBE/UVLOG/FBOLOG/COVERAGE` 等高频项 |
-| AOT 失败不阻塞构建 | `gen_shader_aot.py` 只打日志，失败也继续 | 增加 `failed > 0` 时的显式警告/可选 `--strict`，CI 用 strict |
+| ~~AOT 失败不阻塞构建~~ **已修复** | `gen_shader_aot.py --strict` 对照 `metal/audit/aot-expected.json`（允许的 4 个 mod 失败 + 最低 metallib 覆盖率）；`--check` 不再改动工作区 | CI 已通过 `verify.sh` 使用 strict |
+| 文档/缓存数字不同步 | `README.MD` / `METAL-TODO.md` 中的 116/112 等数字是快照 | ✅ `metal/scripts/check-docs.py` 自动校验（已接入 `verify.sh` 与 GitHub Action） |
+| ~~没有一键验证入口~~ **已修复** | 各检查散落在不同脚本 | ✅ 根目录 `verify.sh`：翻译器测试 + AOT 严格审计 + 文档校验（`--no-aot` / `--with-native` 可选） |
 | 无自动化像素回归 | 目前全靠手工截图 + `diff.py` | 用 `metal/tools/native_replay` + 录制帧建立金帧对比（逐像素 diff），纳入脚本 |
 | 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
 | 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |

@@ -1,0 +1,10 @@
+{
+  "cacheEntries": 116,
+  "minimumMetallibStages": 112,
+  "allowedMetallibFailures": {
+    "357609C9B329A877": "mod cable.frag: chroma_phase is only defined under TWO_PHASE/THREE_PHASE (mod bug)",
+    "EFD80EB711B13CBD": "mod firething.frag: calls undefined noise1() (mod bug)",
+    "B3064EBB937D8A8F": "mod line.frag: gl_FragColor = vec2 assignment is invalid GLSL (mod bug)",
+    "24F308F6EAA7CEF8": "mod scaryGlitch.frag: length() on a vector component is ambiguous in MSL (mod bug)"
+  }
+}

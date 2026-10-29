@@ -212,6 +212,21 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 
 输出应为 `OK - Metal backend compiles against bgfx API v167 and Lime`。
 
+### 7.1 一键验证（无需构建 app）
+
+```sh
+./verify.sh                 # 翻译器单测 + AOT 严格审计 + 文档一致性
+./verify.sh --no-aot        # 跳过 AOT（无需 haxelib 依赖；CI 同款）
+./verify.sh --with-native   # 额外跑上面的 C++/bgfx 编译检查
+```
+
+- `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
+  且 `.metallib` 覆盖率不得低于 `metal/audit/aot-expected.json` 中登记的下限
+  （当前 112/116，允许 4 个 mod shader 回退）；
+- `check-docs.py`：校验 README / METAL-TODO 里的 116/112 等数字与缓存一致，防止文档过期；
+- CI：`.github/workflows/metal-verify.yml` 在 macOS 上跑翻译器单测 + 文档校验
+  （AOT 审计需要项目的 haxelib 依赖，留给本地 `./verify.sh`）。
+
 ---
 
 ## 8. 诊断开关（环境变量）

@@ -1,0 +1,43 @@
+name: metal-verify
+
+# Fast, app-build-free checks for the Metal backend:
+#   * translator unit tests (pure Haxe, no haxelib dependencies)
+#   * documentation numbers vs. the committed AOT cache
+#   * Python/shell syntax of the tooling
+#
+# The full AOT audit (./verify.sh) additionally needs the project's haxelib
+# dependencies and the local .metallib compiler, so it is run manually:
+#     ./verify.sh
+#     ./verify.sh --with-native     # plus the C++/bgfx compile check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Haxe
+        run: brew install haxe
+
+      - name: Python tooling syntax
+        run: python3 -m py_compile CodenameEngine-1.0.1/metal/scripts/*.py
+
+      - name: Documentation consistency
+        run: python3 CodenameEngine-1.0.1/metal/scripts/check-docs.py
+
+      - name: Translator unit tests
+        run: haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslate --interp
+
+      - name: Shell syntax
+        run: |
+          bash -n verify.sh
+          for script in CodenameEngine-1.0.1/metal/scripts/*.sh; do bash -n "$script"; done

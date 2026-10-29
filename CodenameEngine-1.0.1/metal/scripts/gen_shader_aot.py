@@ -49,6 +49,7 @@ METAL_DIR = os.path.dirname(HERE)
 DEFAULT_PROJECT = os.path.dirname(METAL_DIR)
 DEFAULT_OUT = os.path.join(METAL_DIR, 'haxe', 'lime', 'graphics', 'metal', 'ShaderAotCache.hx')
 REPORT_OUT = os.path.join(METAL_DIR, 'audit', 'aot-coverage.md')
+EXPECTED_OUT = os.path.join(METAL_DIR, 'audit', 'aot-expected.json')
 TRANSLATOR_MAIN = os.path.join(METAL_DIR, 'tools', 'GenShaderAot.hx')
 
 # Build-time MSL -> .metallib compiler (Objective-C++, needs only Command Line Tools).
@@ -450,6 +451,62 @@ def write_report(entries, out_path, project, roots, metallib_stats=None):
     return out_path
 
 
+
+# ------------------------------------------------------------------- strict audit
+
+def load_expected():
+    """The committed expectation file (see metal/audit/aot-expected.json)."""
+    try:
+        with open(EXPECTED_OUT, 'r', encoding='utf-8') as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except ValueError as exc:  # noqa: BLE001 - a broken file must be visible, not fatal
+        sys.stderr.write('warning: cannot parse %s: %s\n' % (expected_rel(), exc))
+        return None
+
+
+def expected_rel():
+    return os.path.relpath(EXPECTED_OUT, DEFAULT_PROJECT)
+
+
+def strict_audit(entries, metallib_stats):
+    """Compares a generation run against metal/audit/aot-expected.json.
+
+    Translation failures are always fatal (handled by main()); this only covers the
+    .metallib acceleration path, which is allowed to fall back for a small, explicitly
+    listed set of mod shaders.
+    """
+    expected = load_expected()
+    problems = []
+    if expected is None:
+        return ['missing %s - cannot validate the expected AOT coverage' % expected_rel()]
+
+    failures = metallib_stats.get('failures') or []
+    allowed = expected.get('allowedMetallibFailures') or {}
+    current = set()
+    for key, stage, error in failures:
+        if key in allowed:
+            current.add(key)
+            continue
+        problems.append('unexpected .metallib failure %s (%s): %s' % (key, stage, error))
+
+    for key in sorted(set(allowed) - current):
+        print('[gen-shader-aot] note: %s no longer falls back (%s) - update %s'
+              % (key, allowed[key], expected_rel()))
+
+    ok = int(metallib_stats.get('ok', 0))
+    minimum = int(expected.get('minimumMetallibStages', 0))
+    if ok < minimum:
+        problems.append('.metallib coverage %d < expected minimum %d' % (ok, minimum))
+
+    wanted_entries = expected.get('cacheEntries')
+    if wanted_entries is not None and len(entries) != int(wanted_entries):
+        problems.append('cache entries %d != expected %d' % (len(entries), int(wanted_entries)))
+
+    return problems
+
+
 # ----------------------------------------------------------------------- main
 
 def collect(project):
@@ -477,6 +534,8 @@ def main(argv=None):
     parser.add_argument('--out', default=DEFAULT_OUT, help='ShaderAotCache.hx output path')
     parser.add_argument('--report', default=REPORT_OUT, help='generated coverage table output path')
     parser.add_argument('--check', action='store_true', help='fail if the checked-in cache is stale')
+    parser.add_argument('--strict', action='store_true',
+                        help='fail when .metallib coverage/known-failure allowlist (metal/audit/aot-expected.json) regresses')
     parser.add_argument('--keep-temp', action='store_true', help='keep the haxe manifest/result files')
     parser.add_argument('--skip-metallib', action='store_true',
                         help='do not compile .metallib payloads (MSL is compiled at runtime instead)')
@@ -532,10 +591,6 @@ def main(argv=None):
                 for key, stage, error in metallib_stats['failures']:
                     print('[gen-shader-aot]   %s %-8s %s' % (key, stage, error))
 
-    size, changed = write_cache(entries, args.out)
-    if not args.check:
-        write_report(entries, args.report, project, roots, metallib_stats=metallib_stats)
-
     stages = {}
     for entry in entries:
         stages[entry['s']] = stages.get(entry['s'], 0) + 1
@@ -549,20 +604,37 @@ def main(argv=None):
         print('[gen-shader-aot] by source kind              : %s'
               % ', '.join('%s=%d' % (k, kinds[k]) for k in sorted(kinds)))
         print('[gen-shader-aot] fingerprint                 : %s' % fingerprint(build_payload(entries)))
-        print('[gen-shader-aot] %s %s (%d bytes)'
-              % ('wrote' if changed else 'unchanged', relative(args.out, project), size))
-        if not args.check:
-            print('[gen-shader-aot] wrote %s' % relative(args.report, project))
 
     if args.check:
-        # regenerate into memory and compare against the checked-in file
+        # regenerate into a temp file and compare against the checked-in cache; never
+        # write to the working tree in this mode.
         expected = os.path.join(tempfile.mkdtemp(prefix='cne-aot-check-'), 'ShaderAotCache.hx')
         write_cache(entries, expected)
         if not os.path.exists(args.out) or open(args.out, 'rb').read() != open(expected, 'rb').read():
             sys.stderr.write('error: %s is stale - run python3 metal/scripts/gen_shader_aot.py\n'
                              % relative(args.out, project))
             return 4
-        print('[gen-shader-aot] cache is up to date')
+        if not args.quiet:
+            print('[gen-shader-aot] cache is up to date')
+    else:
+        size, changed = write_cache(entries, args.out)
+        write_report(entries, args.report, project, roots, metallib_stats=metallib_stats)
+        if not args.quiet:
+            print('[gen-shader-aot] %s %s (%d bytes)'
+                  % ('wrote' if changed else 'unchanged', relative(args.out, project), size))
+            print('[gen-shader-aot] wrote %s' % relative(args.report, project))
+
+    if args.strict:
+        problems = strict_audit(entries, metallib_stats)
+        if problems:
+            sys.stderr.write('error: AOT strict audit failed (%d problem(s)):\n' % len(problems))
+            for problem in problems:
+                sys.stderr.write('  - %s\n' % problem)
+            return 5
+        if not args.quiet:
+            print('[gen-shader-aot] strict audit passed (metallib %d/%d, %d allowed fallback(s))'
+                  % (int(metallib_stats.get('ok', 0)), len(entries),
+                     len(metallib_stats.get('failures') or [])))
 
     return 0
 
