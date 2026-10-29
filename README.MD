@@ -311,22 +311,23 @@ Expected output: `OK - Metal backend compiles against bgfx API v167 and Lime`.
 
 ---
 
-## 11. Known limitations / roadmap
+## 11. Future work / roadmap (not scheduled)
 
-[docs/METAL-TODO.md](docs/METAL-TODO.md) only lists open items now:
+All items that could be completed with a single app build are done and verified
+([docs/METAL-TODO.md](docs/METAL-TODO.md) has no open actionable items). The remaining work is
+multi-day and **not scheduled**:
 
-- architecture: OpenFL still goes through the GL-shaped API; Metal-native `Context3D` and
-  dropping bgfx are future work (plans and A/B prototype in
+- **Architecture**: Metal-native `Context3D` (drop the `lime_gl_*` ABI and the GL state
+  simulation), then removing bgfx in favour of direct Metal submission, then deleting the GL
+  semantics adapter (plans and an A/B prototype in
   `docs/zh-CN/metal/audit/openfl-native.md`, `metal/tools/native_replay/`);
-- **2** shader stages have no prebuilt `.metallib` (external shader source issues; coverage 114/116);
-- `DisplayObject.mask` verified end-to-end (`CNE_METAL_SELFTEST=1`: inside white, outside
-  masked, both `Window.readPixels` and `BitmapData.draw`);
-- `readPixels` implemented: offscreen immediate, backbuffer one-frame cache (first call arms,
-  next call returns the pixels);
-- 3D / Stage3D capabilities are not implemented;
-- GL states bgfx cannot express (`blendColor`, `depthRange`, `polygonOffset`, `lineWidth>1`,
-  MSAA, nested-mask stencil write-mask, ...) are recorded and warned about once; the decision
-  is not to implement them (see `docs/DIAGNOSTICS.md` section 4.1).
+- **3D / Stage3D**: 3D textures, MRT/drawBuffers, blitFramebuffer, transform feedback,
+  uniform blocks, queries and instancing are not implemented;
+- **External**: 2 external shader sources still contain invalid GLSL (upstream); the GitHub
+  Actions workflow template needs `gh auth refresh -s workflow`;
+- **Decisions**: GL states bgfx cannot express (`blendColor`, `depthRange`, `polygonOffset`,
+  `lineWidth>1`, MSAA, nested-mask stencil write-mask, ...) are recorded and warned about once;
+  the decision is not to implement them (see `docs/DIAGNOSTICS.md` section 4.1).
 
 ---
 

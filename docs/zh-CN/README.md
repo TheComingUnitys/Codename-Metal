@@ -321,19 +321,19 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 
 ---
 
-## 11. 已知限制 / Roadmap
+## 11. 后续工作 / Roadmap（暂不排期）
 
-[docs/METAL-TODO.md](../METAL-TODO.md) 现在**只保留未完成项**，摘要：
+所有"构建一次即可完成"的项目都已完成并验证（[docs/METAL-TODO.md](../METAL-TODO.md) 已无可执行待办）。
+剩余工作属于多天工程，**暂不排期**：
 
-- 架构：OpenFL 仍走 GL 形状 API（`lime_gl_*`），可做 Metal-native `Context3D`、再评估去掉 bgfx
-  （方案与 A/B 原型见 `metal/audit/openfl-native.md`、`metal/tools/native_replay/`）；
-- 2 个 shader stage 尚未在构建期生成 `.metallib`（均为 mod 源码问题，需上游修复；覆盖 114/116）；
-- `DisplayObject.mask` 已端到端验证（`CNE_METAL_SELFTEST=1`：内部白、外部被遮，
-  `Window.readPixels` 与 `BitmapData.draw` 均通过）；
-- `readPixels` 已实现：离屏立即读回，背缓冲一帧缓存（第一次布防、下一次返回像素）；
-- 3D/Stage3D 能力（3D 纹理、MRT、transform feedback、uniform block 等）未实现；
-- bgfx 无法表达的状态（`blendColor`/`depthRange`/`polygonOffset`/`lineWidth>1`/MSAA/嵌套 mask 的
-  stencil write-mask 等）已**记录并一次性告警**，决策为不实现（详见 `docs/DIAGNOSTICS.md` §4.1）。
+- **架构**：Metal-native `Context3D`（去掉 `lime_gl_*` ABI 与 GL 状态仿真）→ 去掉 bgfx 直连 Metal
+  → 删除 GL 语义适配层（方案与 A/B 原型见 `metal/audit/openfl-native.md`、`metal/tools/native_replay/`）；
+- **3D / Stage3D**：3D 纹理、MRT/drawBuffers、blitFramebuffer、transform feedback、uniform block、
+  query、instancing 未实现；
+- **外部**：2 个外部 shader 源仍含非法 GLSL（上游）；GitHub Actions 模板需要
+  `gh auth refresh -s workflow`；
+- **已决策**：bgfx 无法表达的状态（`blendColor`/`depthRange`/`polygonOffset`/`lineWidth>1`/MSAA/
+  嵌套 mask 的 stencil write-mask 等）已记录并一次性告警，决策为不实现（见 `docs/DIAGNOSTICS.md` §4.1）。
 
 ---
 

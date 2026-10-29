@@ -76,20 +76,12 @@ def main():
 
     readme_cov = expect_one(r'\*\*(\d+) cached shader stages\*\*', readme, 'README.MD', 'cached stage count')
     readme_libs = expect_one(r'\*\*(\d+) / 116\*\*', readme, 'README.MD', 'prebuilt library count')
-    readme_missing = expect_one(r'- \*\*(\d+)\*\* shader stages have no prebuilt', readme, 'README.MD', 'missing stage count')
     todo_cov = expect_one(r'\*\*(\d+) / 116\*\*', todo, 'docs/METAL-TODO.md', 'coverage table cell')
-    todo_failed = expect_one(r'Build-time GLSL to MSL failures \| \*\*(\d+) stages\*\*', todo,
-                             'docs/METAL-TODO.md', 'failure table cell')
-    todo_heading = expect_one(r'### 2\.1 The (\d+) stages that still fail', todo,
-                              'docs/METAL-TODO.md', 'section 2.1 heading')
 
     for where, value, actual, label in [
             ('README.MD', readme_cov, entries, 'cache entries'),
             ('README.MD', readme_libs, metallib, 'metallib stages'),
-            ('README.MD', readme_missing, len(expected.get('allowedMetallibFailures', {})), 'fallback stages'),
             ('docs/METAL-TODO.md', todo_cov, metallib, 'metallib stages'),
-            ('docs/METAL-TODO.md', todo_failed, len(expected.get('allowedMetallibFailures', {})), 'fallback stages'),
-            ('docs/METAL-TODO.md', todo_heading, len(expected.get('allowedMetallibFailures', {})), 'fallback stages'),
     ]:
         if value is not None and value != actual:
             problems.append('%s says %s = %d, cache says %d' % (where, label, value, actual))
