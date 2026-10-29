@@ -39,8 +39,10 @@ jobs:
           haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslate --interp
           haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslateCompat --interp
 
-      - name: Screenshot diff self test
-        run: python3 CodenameEngine-1.0.1/metal/tools/frame_diff.py --selftest
+      - name: Screenshot diff + profile checker self tests
+        run: |
+          python3 CodenameEngine-1.0.1/metal/tools/frame_diff.py --selftest
+          python3 CodenameEngine-1.0.1/metal/tools/profile_check.py --selftest
 
       - name: Diagnostics facade smoke test
         run: |

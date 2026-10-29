@@ -71,6 +71,9 @@
 [cne-prof] f=240 draws/frame=48.0 frontEnd=812.3us/frame [bind=... submitAll=... viewAlloc=... flip=... view=... uniformApply=... bgfxSubmit=... misc=...] uniform=... texUpload=... texMB=0.12/frame
 ```
 
+阈值回归：`python3 metal/tools/profile_check.py <log> --max-frontend-us 1500 --max-hitch-ms 60`
+（也支持 `--max-draws`；`--selftest` 不需要 app）。
+
 ### 2.3 卡顿（`hitch` / `hitch-detail`）
 
 ```text

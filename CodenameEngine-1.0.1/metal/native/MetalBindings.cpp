@@ -432,7 +432,10 @@ namespace lime {
 			int width = 0;
 			int height = 0;
 			int internalFormat = 0;
+			// depth/stencil attachment (used when the framebuffer also has a colour texture)
 			bgfx::TextureHandle handle = BGFX_INVALID_HANDLE;
+			// colour attachment (used when the framebuffer has *only* renderbuffers)
+			bgfx::TextureHandle colorHandle = BGFX_INVALID_HANDLE;
 		};
 
 		/** Vertex attribute state recorded by glVertexAttribPointer. */
@@ -4625,7 +4628,31 @@ namespace lime {
 			FramebufferData& fb = it->second;
 
 			auto tex = textures.find (fb.texture);
-			if (tex == textures.end ()) return;
+			if (tex == textures.end ())
+			{
+				// GL framebuffer with a *colour renderbuffer* (no colour texture): create an
+				// RT texture for it and cache it under a synthetic texture id so the normal
+				// attachment path below works unchanged.
+				if (fb.texture != 0 || fb.renderbuffer == 0) return;
+
+				auto rbIt = renderbuffers.find (fb.renderbuffer);
+				if (rbIt == renderbuffers.end () || rbIt->second.width <= 0 || rbIt->second.height <= 0) return;
+
+				RenderbufferData& rb = rbIt->second;
+				if (!bgfx::isValid (rb.colorHandle))
+				{
+					rb.colorHandle = bgfx::createTexture2D (
+						(uint16_t)rb.width, (uint16_t)rb.height, false, 1,
+						bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_RT, nullptr);
+				}
+
+				const int syntheticId = -fb.renderbuffer;
+				TextureData& td = textures[syntheticId];
+				td.handle = rb.colorHandle;
+				td.width = rb.width;
+				td.height = rb.height;
+				tex = textures.find (syntheticId);
+			}
 
 			if (!bgfx::isValid (tex->second.handle))
 			{
@@ -4651,7 +4678,7 @@ namespace lime {
 				// A GL renderbuffer attached to this framebuffer is the depth/stencil target
 				// (OpenFL uses this for masks / explicit attachments).  Create it on demand and
 				// keep it on the renderbuffer so resizes reuse the same storage.
-				if (fb.renderbuffer != 0)
+				if (fb.renderbuffer != 0 && fb.texture != 0)
 				{
 					auto rbIt = renderbuffers.find (fb.renderbuffer);
 					if (rbIt != renderbuffers.end () && rbIt->second.width > 0 && rbIt->second.height > 0)
@@ -5031,7 +5058,15 @@ namespace lime {
 			if (fbo != 0)
 			{
 				auto it = framebuffers.find (fbo);
-				if (it != framebuffers.end () && it->second.width > 0) return it->second.width;
+				if (it != framebuffers.end ())
+				{
+					if (it->second.width > 0) return it->second.width;
+					if (it->second.renderbuffer != 0)
+					{
+						auto r = renderbuffers.find (it->second.renderbuffer);
+						if (r != renderbuffers.end () && r->second.width > 0) return r->second.width;
+					}
+				}
 			}
 			return MetalContext::state.backbufferWidth;
 		}
@@ -6873,6 +6908,9 @@ namespace lime {
 			// rebuilds with the new size.
 			bgfx::destroy (rb.handle);
 			rb.handle = BGFX_INVALID_HANDLE;
+			if (bgfx::isValid (rb.colorHandle)) bgfx::destroy (rb.colorHandle);
+			rb.colorHandle = BGFX_INVALID_HANDLE;
+			textures.erase (-MetalContext::state.currentRenderbuffer);
 			InvalidateFramebuffersForRenderbuffer (MetalContext::state.currentRenderbuffer);
 		}
 	}
@@ -6893,6 +6931,8 @@ namespace lime {
 		{
 			InvalidateFramebuffersForRenderbuffer (renderbuffer);
 			if (bgfx::isValid (it->second.handle)) bgfx::destroy (it->second.handle);
+			if (bgfx::isValid (it->second.colorHandle)) bgfx::destroy (it->second.colorHandle);
+			textures.erase (-renderbuffer);
 			renderbuffers.erase (it);
 		}
 		MetalContext::Remove (renderbuffer);

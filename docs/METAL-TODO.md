@@ -66,11 +66,6 @@
 
 验收：`window.readPixels()` 与屏幕逐像素一致；`BitmapData.draw` 产出正确图像。
 
-### 3.3 颜色 renderbuffer 附件未支持
-
-深度/模板 renderbuffer 已支持；把 renderbuffer 作为**颜色**附件（`fb.texture == 0`）仍不渲染。
-OpenFL 2D 不用；实现需为 renderbuffer 建 RT 纹理并接入 EnsureFramebuffer。
-
 ---
 
 ## 4. P1 — 3D / Stage3D 能力缺失
@@ -96,7 +91,6 @@ OpenFL 2D 不用；实现需为 renderbuffer 建 RT 纹理并接入 EnsureFrameb
 | --- | --- | --- |
 | 像素回归金帧 | 工具链完成，但无金帧 | 构建 app 后跑 `pixel-regression.sh --app <app> --scenario menu --update` |
 | CI | 模板在 `docs/ci/metal-verify.yml`；推 `.github/workflows/` 需要 token 的 `workflow` scope | `gh auth refresh -s workflow` 后复制模板并 push |
-| 性能回归 | `profile`/hitch 数据只能人工判读 | 可扩展 `verify.sh` 解析 `[cne-prof]` 阈值 |
 
 ---
 
@@ -106,7 +100,7 @@ OpenFL 2D 不用；实现需为 renderbuffer 建 RT 纹理并接入 EnsureFrameb
 2. §3.2 readPixels（解锁截图/读回）；
 3. §2.2 关闭运行时翻译兜底（需真实 mod 回归）；
 4. §1.1 Metal-native Context3D（最大架构项）；
-5. §4 3D / §3.3 颜色 renderbuffer 按需。
+5. §4 3D / §5 状态语义按需。
 
 ---
 

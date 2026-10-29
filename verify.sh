@@ -43,6 +43,7 @@ step "2/4 diagnostics facade + screenshot diff self test"
 "$PROJECT/metal/scripts/diag.sh" --list >/dev/null
 "$PROJECT/metal/scripts/diag.sh" --print stats,fbo >/dev/null
 python3 "$PROJECT/metal/tools/frame_diff.py" --selftest
+python3 "$PROJECT/metal/tools/profile_check.py" --selftest
 
 if [ "$RUN_AOT" = "1" ]; then
 	step "3/4 AOT cache staleness + strict coverage audit"
