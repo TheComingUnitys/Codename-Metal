@@ -226,7 +226,10 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 - `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
   且 `.metallib` 覆盖率不得低于 `metal/audit/aot-expected.json` 中登记的下限
   （当前 112/116，允许 4 个 mod shader 回退）；
-- `check-docs.py`：校验 README / METAL-TODO 里的 116/112 等数字与缓存一致，防止文档过期；
+- `metal/tools/frame_diff.py --selftest`：截图比对工具的自检（纯合成帧，无需 app）；
+  真正的像素回归用 `metal/scripts/pixel-regression.sh --app <app> --scenario menu`
+  （先 `--update` 生成金帧；金帧与 GPU/驱动相关，见 `metal/autotests/README.md`）；
+- `check-docs.py`：校验 README / METAL-TODO 里的 116/113 等数字与缓存一致，防止文档过期；
 - CI：`.github/workflows/metal-verify.yml` 在 macOS 上跑翻译器单测 + 文档校验
   （AOT 审计需要项目的 haxelib 依赖，留给本地 `./verify.sh`）。
 
@@ -239,6 +242,7 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 | `CNE_METAL_PROFILE=1` | 每 240 帧打印 CPU 前端耗时：draws/frame、bind、bgfx submit、uniform、纹理上传（µs/帧、MB/帧） |
 | `CNE_METAL_HITCH=1` / `CNE_METAL_HITCH_DETAIL=1` | 报告 >34ms 的卡顿帧；DETAIL 拆分 game/submit/present/rest |
 | `CNE_METAL_DRAWPROBE=1` | 逐 draw：program/fbo/tex/size/rt/m0/m5/m13 |
+| `CNE_METAL_SHOT_RAW=<frame>:<path>[,<frame>:<path>...]` | 写出无头 BGRA 原始帧 + `.txt` 元数据（`frame_diff.py` / `pixel-regression.sh` 用；支持逗号分隔多帧） |
 | `CNE_METAL_UVLOG=1` | 屏幕合成翻转判定（comp#/needFlip/screenSized/flipV） |
 | `CNE_METAL_FBOLOG=1` | FBO 创建/失效日志 |
 | `CNE_METAL_COVERAGE=1`（+`_OUT=<file>`） | 统计 269 个 `lime_gl_*` 入口的运行时调用次数 |

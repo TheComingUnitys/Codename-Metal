@@ -153,7 +153,10 @@ namespace
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <algorithm>
 #include <set>
+#include <string>
+#include <vector>
 #include <thread>
 
 #ifdef LIME_SDL
@@ -1016,18 +1019,65 @@ namespace metal {
 		// Diagnostic raw screenshot for the native-Metal A/B prototype: a plain
 		// headerless BGRA/RGBA dump plus a .txt describing it, written on the main
 		// thread once bgfx's render thread hands the pixels back.
-		static const char* shotRawSpec = std::getenv ("CNE_METAL_SHOT_RAW");
-		if (shotRawSpec != nullptr && shotRawSpec[0] != '\0')
+		//
+		// CNE_METAL_SHOT_RAW supports a comma-separated list of `frame:path` entries so
+		// one run can capture several frames (used by metal/scripts/pixel-regression.sh).
+		// A single `frame:path` keeps working exactly as before.  Captures are
+		// serialised: at most one screenshot is in flight, later entries fire on their
+		// own frame.
+		struct ShotRawEntry
 		{
-			static bool alreadyRequested = false;
-			if (!alreadyRequested)
+			uint32_t frame;
+			std::string path;
+		};
+		static std::vector<ShotRawEntry> shotRawEntries;
+		static bool shotRawParsed = false;
+		static size_t shotRawNext = 0;
+
+		if (!shotRawParsed)
+		{
+			shotRawParsed = true;
+			const char* spec = std::getenv ("CNE_METAL_SHOT_RAW");
+			if (spec != nullptr && spec[0] != '\0')
 			{
-				const char* colon = std::strchr (shotRawSpec, ':');
-				const uint32_t want = (uint32_t)std::strtoul (shotRawSpec, nullptr, 10);
-				if (colon != nullptr && want == frameIndex)
+				std::string rest (spec);
+				size_t pos = 0;
+				while (pos <= rest.size ())
 				{
-					alreadyRequested = true;
-					gShotRawTarget.assign (colon + 1);
+					size_t comma = rest.find (',', pos);
+					std::string part = rest.substr (pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
+					size_t colon = part.find (':');
+					if (colon != std::string::npos)
+					{
+						ShotRawEntry entry;
+						entry.frame = (uint32_t)std::strtoul (part.c_str (), nullptr, 10);
+						entry.path = part.substr (colon + 1);
+						if (!entry.path.empty ()) shotRawEntries.push_back (entry);
+					}
+					if (comma == std::string::npos) break;
+					pos = comma + 1;
+				}
+				std::sort (shotRawEntries.begin (), shotRawEntries.end (),
+					[] (const ShotRawEntry& a, const ShotRawEntry& b) { return a.frame < b.frame; });
+			}
+		}
+
+		if (shotRawNext < shotRawEntries.size () && shotRawEntries[shotRawNext].frame <= frameIndex)
+		{
+			// The write side (below) keeps gShotRawTarget until the pixels arrive, so only
+			// start the next capture once the previous one has been consumed.
+			if (gShotRawTarget.empty ())
+			{
+				const ShotRawEntry& entry = shotRawEntries[shotRawNext++];
+				if (entry.frame < frameIndex)
+				{
+					std::fprintf (stdout, "[cne-metal] raw screenshot frame %u missed (now %u)\n",
+						entry.frame, frameIndex);
+					std::fflush (stdout);
+				}
+				else
+				{
+					gShotRawTarget = entry.path;
 					bgfx::requestScreenShot (BGFX_INVALID_HANDLE, gShotRawTarget.c_str ());
 					std::fprintf (stdout, "[cne-metal] raw screenshot requested at frame %u -> %s.raw\n",
 						frameIndex, gShotRawTarget.c_str ());

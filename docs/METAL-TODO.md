@@ -202,7 +202,7 @@
 | 文档/缓存数字不同步 | `README.MD` / `METAL-TODO.md` 中的 116/112 等数字是快照 | ✅ `metal/scripts/check-docs.py` 自动校验（已接入 `verify.sh` 与 GitHub Action） |
 | ~~没有一键验证入口~~ **已修复** | 各检查散落在不同脚本 | ✅ 根目录 `verify.sh`：翻译器测试 + AOT 严格审计 + 文档校验（`--no-aot` / `--with-native` 可选） |
 | ~~翻译器回归无单测~~ **已修复** | 翻译器规则此前只靠真实 shader 间接覆盖 | ✅ `TestTranslateCompat.hx`（38 项）+ `TestTranslate.hx`（40 项），`verify.sh` 自动执行 |
-| 无自动化像素回归 | 目前全靠手工截图 + `diff.py` | 用 `metal/tools/native_replay` + 录制帧建立金帧对比（逐像素 diff），纳入脚本 |
+| ~~无自动化像素回归~~ **工具链就绪** | `CNE_METAL_SHOT_RAW` 扩展为多帧列表；`metal/tools/frame_diff.py`（含自检）负责逐像素 diff/阈值/BMP 可视化；`metal/scripts/pixel-regression.sh` 场景驱动（`--update` 写金帧） | 金帧需在有 app 的机器上生成（`metal/autotests/golden` 已 gitignore）；CI 目前只跑自检 |
 | 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
 | 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |
 

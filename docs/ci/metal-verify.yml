@@ -35,7 +35,12 @@ jobs:
         run: python3 CodenameEngine-1.0.1/metal/scripts/check-docs.py
 
       - name: Translator unit tests
-        run: haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslate --interp
+        run: |
+          haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslate --interp
+          haxe -cp CodenameEngine-1.0.1/metal/haxe -main lime.graphics.metal.TestTranslateCompat --interp
+
+      - name: Screenshot diff self test
+        run: python3 CodenameEngine-1.0.1/metal/tools/frame_diff.py --selftest
 
       - name: Shell syntax
         run: |

@@ -35,24 +35,27 @@ done
 HAXE="${HAXE:-haxe}"
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
-step "1/3 translator unit tests"
+step "1/4 translator unit tests"
 "$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslate --interp
 "$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslateCompat --interp
 
+step "2/4 screenshot diff self test"
+python3 "$PROJECT/metal/tools/frame_diff.py" --selftest
+
 if [ "$RUN_AOT" = "1" ]; then
-	step "2/3 AOT cache staleness + strict coverage audit"
+	step "3/4 AOT cache staleness + strict coverage audit"
 	# --check: the committed ShaderAotCache.hx must match a fresh generation.
 	# --strict: .metallib coverage may only regress against metal/audit/aot-expected.json.
 	python3 "$PROJECT/metal/scripts/gen_shader_aot.py" --check --strict
 else
-	step "2/3 AOT audit skipped (--no-aot)"
+	step "3/4 AOT audit skipped (--no-aot)"
 fi
 
-step "3/3 documentation consistency"
+step "4/4 documentation consistency"
 python3 "$PROJECT/metal/scripts/check-docs.py"
 
 if [ "$RUN_NATIVE" = "1" ]; then
-	step "4/3 native backend compile check"
+	step "extra: native backend compile check"
 	"$PROJECT/metal/scripts/check-compile.sh" --lime "$LIME" --hxcpp "$HXCPP" --out "${TMPDIR:-/tmp}/cne-verify-obj"
 fi
 

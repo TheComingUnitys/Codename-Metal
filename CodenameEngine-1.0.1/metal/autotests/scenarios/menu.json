@@ -1,0 +1,18 @@
+{
+  "autokeys": "",
+  "captures": [
+    {
+      "frame": 90,
+      "name": "menu-early"
+    },
+    {
+      "frame": 240,
+      "name": "menu-late"
+    }
+  ],
+  "tolerance": {
+    "diffPixels": 6000,
+    "mean": 2,
+    "abs": 32
+  }
+}

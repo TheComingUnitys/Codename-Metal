@@ -28,3 +28,7 @@ CodenameEngine-1.0.1/art/flashFiles/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# pixel-regression goldens (machine/driver specific) and artifacts
+CodenameEngine-1.0.1/metal/autotests/golden/
+CodenameEngine-1.0.1/metal/autotests/**/*.bmp
