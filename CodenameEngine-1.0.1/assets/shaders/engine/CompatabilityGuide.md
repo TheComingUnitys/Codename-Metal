@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../../../docs/zh-CN/upstream/README.md)
+
 ## Here are guides on common mistakes and advices for writing shaders for flixel and openfl.
 
 It's important to follow this guide as most shader coders make these mistakes a lot and end up with shaders that only work on certain devices.

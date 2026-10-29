@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../../docs/zh-CN/upstream/README.md)
+
 List of SFX to-do for editors,
 maybe some other menus will need them in the future,
 but for now just editors!

@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../../docs/zh-CN/upstream/README.md)
+
 ---
 name: Enhancement
 about: Add a new feature

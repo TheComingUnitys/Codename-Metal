@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../../docs/zh-CN/upstream/README.md)
+
 ---
 name: Compiling help
 about: If you need help compiling the game, and you're running into issues. (Look

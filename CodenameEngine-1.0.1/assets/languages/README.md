@@ -1,5 +1,7 @@
 # Translations
 
+**English** | [中文摘要](../../../docs/zh-CN/upstream/README.md)
+
 ## Adding a new language
 
 1. Create a new folder in this folder with the language's code. Using the ISO 3166-1 codes for the language. (ex: `en` for English, `es` for Spanish, etc) (For full list of codes, see [here](https://en.wikipedia.org/wiki/ISO_3166-1#Codes))

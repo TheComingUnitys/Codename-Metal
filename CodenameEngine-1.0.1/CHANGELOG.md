@@ -1,5 +1,7 @@
 # v0.4.0 - First (proper) beta release
 
+**English** | [中文摘要](../docs/zh-CN/upstream/README.md)
+
 This changelog lists every change that has been added since the last update (including public changes).
 
 ## Flags System

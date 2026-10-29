@@ -1,92 +1,104 @@
-# Metal 后端 TODO（仅剩「需要构建运行」与「外部阻塞」的项）
+# Metal backend TODO (only build-blocked and externally blocked items)
 
-> 所有**不需要构建 app** 就能完成的工作已全部收口（翻译器、AOT、诊断/测试设施、
-> 发布流水线、Lime 补丁导出、状态语义/告警决策等）。
-> 下面每项都已明确标注为什么必须构建/运行或外部依赖才能继续。
-> 诊断：`docs/DIAGNOSTICS.md`；Lime 补丁：`docs/LIME-PATCHES.md`；验证：`./verify.sh`。
+**English** | [中文](zh-CN/METAL-TODO.md)
 
-## 0. 当前基线（自动校验，勿手改）
+> Every task that can be completed **without building the app** is done (translator,
+> AOT, diagnostics/testing, release pipeline, Lime patch export, state-semantics
+> decisions, ...).
+> Each item below states why it needs a build/run cycle or an external dependency.
+>
+> Diagnostics: [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) - Lime patches:
+> [docs/LIME-PATCHES.md](LIME-PATCHES.md) - verification: `./verify.sh`.
+> Chinese version: [docs/zh-CN/METAL-TODO.md](zh-CN/METAL-TODO.md).
 
-数字由 `metal/scripts/check-docs.py` 校验；`.metallib` 覆盖由 `gen_shader_aot.py --strict`
-对照 `metal/audit/aot-expected.json` 校验。
+## 0. Current baseline (auto-checked, do not edit by hand)
 
-| 项 | 数值 |
+`metal/scripts/check-docs.py` verifies these numbers; `.metallib` coverage is verified by
+`gen_shader_aot.py --strict` against `metal/audit/aot-expected.json`.
+
+| Item | Value |
 | --- | --- |
-| 缓存 stage 总数 | 116（16 vertex / 100 fragment） |
-| 已预编译 `.metallib` | **114 / 116** |
-| 构建期 GLSL→MSL 翻译失败 | **2 个 stage** |
+| Cached shader stages | 116 (16 vertex / 100 fragment) |
+| Prebuilt `.metallib` | **114 / 116** |
+| Build-time GLSL to MSL failures | **2 stages** |
 
-### 2.1 构建期仍失败的 2 个 stage（外部 shader 源自身问题）
+### 2.1 The 2 stages that still fail at build time (external shader source issues)
 
-| key | stage | 原因 |
+| key | stage | Reason |
 | --- | --- | --- |
-| `EFD80EB711B13CBD` | fragment | 调用了未声明的函数 `noise1()`（源中只有 `noise1_2`） |
-| `B3064EBB937D8A8F` | fragment | `gl_FragColor = vec2`（vec4 赋 vec2，非法 GLSL） |
+| `EFD80EB711B13CBD` | fragment | calls the undeclared function `noise1()` (the source only defines `noise1_2`) |
+| `B3064EBB937D8A8F` | fragment | `gl_FragColor = vec2` (vec4 = vec2, invalid GLSL) |
 
-两处问题都位于外部 shader 源码中；本仓库不修改这些源码，逐条明细见
-`metal/audit/aot-coverage.md` 与 `metal/audit/aot-expected.json`。
+Both problems live in external shader sources; this repository does not modify them.
+Per-stage details: `metal/audit/aot-coverage.md` and `metal/audit/aot-expected.json`.
 
-引擎侧已无已知翻译缺陷；新增失败会被 `--strict` 审计拦下。
-
----
-
-## 1. 需要构建并运行 app 才能继续（当前禁止构建，故暂停）
-
-### 1.1 `DisplayObject.mask` 运行时验证
-引擎侧已完整：`bgfx::setStencil` + `colorMask → BGFX_STATE_WRITE_*` + renderbuffer D24S8 模板附件。
-**需要**：构建一次 app，用真实 `.mask` 场景 + 像素回归（`CNE_METAL_SHOT_RAW`）确认遮罩形状不可见、内容正确。
-
-### 1.2 `read_pixels`（截图/读回）
-`lime_gl_read_pixels` 仍为空实现（已有一次性的 `ReportUnimplemented` 告警，不再静默全 0）。
-bgfx 回读是异步的，同步语义需要在帧边界处理（`BGFX_TEXTURE_READ_BACK` + `BGFX_FRAME_FLUSH` 或
-CAMetalLayer drawable 快照）。**任何实现都必须用运行中的 app 验证**（截图与
-`BitmapData.draw(renderer)` 两条路径），因此归入本类。
-
-### 1.3 运行时翻译兜底改为默认关闭
-`ShaderAot.isRuntimeFallbackEnabled()` 目前默认开。要改成默认关闭，必须用真实的第三方 shader 集合跑一次
-（含"构建后才新增 shader"的场景），确认没有未知翻译依赖；否则新增 shader 会直接失败。
-
-### 1.4 架构项 1.1/1.2/1.4（P0）
-- 1.1 Metal-native `Context3D`（消除 `lime_gl_*` 与 GL 状态仿真）；
-- 1.2 去掉 bgfx、直连 Metal；
-- 1.4 删除 GL 语义适配层（Y 翻转、FBO 附件缓存、矩阵镜像补偿等）。
-这三项都是**改动渲染主链路**，必须边构建边跑回归；无 app 时无法验证。
-
-### 1.5 3D / Stage3D 能力
-3D 纹理上传、`glGenerateMipmap`、MRT/drawBuffers、blitFramebuffer、clearBuffer、transform feedback、
-uniform block、query、instancing 等未实现。实现后必须用 3D 测试场景验证。
-
-### 1.6 像素回归金帧
-工具链已就绪（`frame_diff.py`、`pixel-regression.sh`、自检已接入 `verify.sh`），但**没有金帧**。
-需要构建 app 后执行一次：
-`pixel-regression.sh --app <app> --scenario menu --update`。
+The engine side has no known translation defects left; any new failure is caught by the
+`--strict` audit.
 
 ---
 
-## 2. 外部依赖阻塞（非构建）
+## 1. Needs an app build + runtime pass (paused while app builds are disallowed)
 
-| 项 | 阻塞原因 | 解除方式 |
+### 1.1 `DisplayObject.mask` runtime verification
+Engine side is complete: `bgfx::setStencil`, `colorMask -> BGFX_STATE_WRITE_*` and a
+renderbuffer D24S8 stencil attachment.
+**Needed:** one app build, then a real `.mask` scene plus a pixel-regression capture
+(`CNE_METAL_SHOT_RAW`) proving the mask shape is invisible and the content is correct.
+
+### 1.2 `read_pixels` (screenshots / readback)
+`lime_gl_read_pixels` is still a no-op (it now emits a one-shot `ReportUnimplemented`
+warning instead of silently returning zeros). bgfx readback is asynchronous, so synchronous
+GL semantics need frame-boundary handling (`BGFX_TEXTURE_READ_BACK` + `BGFX_FRAME_FLUSH`,
+or a CAMetalLayer drawable snapshot). **Any implementation must be validated in a running
+app** (both screenshots and `BitmapData.draw(renderer)`), hence it belongs here.
+
+### 1.3 Make the runtime-translation fallback default off
+`ShaderAot.isRuntimeFallbackEnabled()` currently defaults to on. Flipping it requires a run
+with a real third-party shader set (including "shader added only after the build"), proving
+there is no unknown translation dependency; otherwise newly added shaders fail outright.
+
+### 1.4 Architecture items 1.1/1.2/1.4 (P0)
+- 1.1 Metal-native `Context3D` (drop `lime_gl_*` and the GL state simulation);
+- 1.2 remove bgfx and submit to Metal directly;
+- 1.4 delete the GL semantics adapter (Y flip, FBO attachment cache, matrix mirror fix-ups, ...).
+All three touch the main render path and require build-and-run regression coverage.
+
+### 1.5 3D / Stage3D capabilities
+3D texture upload, `glGenerateMipmap`, MRT/drawBuffers, blitFramebuffer, clearBuffer,
+transform feedback, uniform blocks, queries, instancing: not implemented. Each must be
+validated with a 3D test scene once implemented.
+
+### 1.6 Pixel-regression goldens
+The tooling is ready (`frame_diff.py`, `pixel-regression.sh`, self tests wired into
+`verify.sh`) but there are **no golden frames** yet. After one app build run:
+`pixel-regression.sh --app <app> --scenario menu --update`.
+
+---
+
+## 2. External blockers (not build-related)
+
+| Item | Blocker | Unblock |
 | --- | --- | --- |
-| 2.1 最后 2 个 shader 失败 | 外部 shader 源非法 GLSL（见 §0） | 由上游修正；引擎侧不为数字改外部源码 |
-| GitHub Actions workflow | 当前 `gh` token 缺 `workflow` scope，不能推 `.github/workflows/` | `gh auth refresh -s workflow` 后 `cp docs/ci/metal-verify.yml .github/workflows/` |
+| 2.1 The last 2 shader failures | external shader sources contain invalid GLSL (see section 0) | fixed upstream; this repo will not edit external sources just to raise the number |
+| GitHub Actions workflow | the current `gh` token lacks the `workflow` scope, so `.github/workflows/` cannot be pushed | `gh auth refresh -s workflow`, then `cp docs/ci/metal-verify.yml .github/workflows/` |
 
 ---
 
-## 3. 解除阻塞后的顺序建议
+## 3. Suggested order once unblocked
 
-1. 构建一次 app：先 `./metal/scripts/make-universal.sh --check` → `--dmg`；
-2. 生成像素回归金帧（§1.6），同时验证 §1.1 mask；
-3. 实现并实测 §1.2 readPixels；
-4. §1.3 关闭运行时翻译兜底（配合真实第三方 shader 回归）；
-5. §1.1（Context3D）→ §1.2（去 bgfx）→ §1.4（删适配层）；
-6. §1.5 3D 按需。
+1. Build the app: `./metal/scripts/make-universal.sh --check`, then `--dmg`;
+2. Generate pixel-regression goldens (1.6) and verify 1.1 (mask) at the same time;
+3. Implement and measure 1.2 (readPixels);
+4. Flip the runtime-translation fallback (1.3) with a real third-party shader regression;
+5. 1.1 (Context3D) -> 1.2 (drop bgfx) -> 1.4 (delete the adapter);
+6. 1.5 (3D) as needed.
 
-## 4. 快速入口
+## 4. Quick entry points
 
 ```sh
-./verify.sh                                   # 翻译器单测 + AOT 严格审计 + 文档 + 自检
-./verify.sh --with-native                     # 追加 C++/bgfx 编译检查
-./metal/scripts/diag.sh --list                # 诊断类别
+./verify.sh                                   # translator tests + strict AOT audit + docs + self tests
+./verify.sh --with-native                     # plus the C++/bgfx compile check
+./metal/scripts/diag.sh --list                # diagnostics categories
 ./metal/scripts/pixel-regression.sh --selftest
 ./metal/scripts/export-lime-patches.sh --lime ... --pristine ... --out ... --verify
 ```

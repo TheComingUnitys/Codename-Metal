@@ -1,4 +1,6 @@
 # The Charter Update
+
+**English** | [中文摘要](../docs/zh-CN/upstream/README.md)
 ## All major chart editors are finished as of this update (finally...)
 ## Engine goes from alpha to beta state : D
 

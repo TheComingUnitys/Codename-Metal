@@ -74,13 +74,13 @@ def main():
     readme = read(README)
     todo = read(TODO)
 
-    readme_cov = expect_one(r'当前 (\d+) 个 stage 中 ', readme, 'README.MD', 'AOT coverage sentence')
-    readme_libs = expect_one(r'含 (\d+) 个预编译库', readme, 'README.MD', 'prebuilt library count')
-    readme_missing = expect_one(r'- (\d+) 个 shader stage 尚未在构建期', readme, 'README.MD', 'missing stage count')
+    readme_cov = expect_one(r'\*\*(\d+) cached shader stages\*\*', readme, 'README.MD', 'cached stage count')
+    readme_libs = expect_one(r'\*\*(\d+) / 116\*\*', readme, 'README.MD', 'prebuilt library count')
+    readme_missing = expect_one(r'- \*\*(\d+)\*\* shader stages have no prebuilt', readme, 'README.MD', 'missing stage count')
     todo_cov = expect_one(r'\*\*(\d+) / 116\*\*', todo, 'docs/METAL-TODO.md', 'coverage table cell')
-    todo_failed = expect_one(r'构建期 GLSL→MSL 翻译失败 \| \*\*(\d+) 个 stage\*\*', todo,
+    todo_failed = expect_one(r'Build-time GLSL to MSL failures \| \*\*(\d+) stages\*\*', todo,
                              'docs/METAL-TODO.md', 'failure table cell')
-    todo_heading = expect_one(r'### 2\.1 构建期仍失败的 (\d+) 个 stage', todo,
+    todo_heading = expect_one(r'### 2\.1 The (\d+) stages that still fail', todo,
                               'docs/METAL-TODO.md', 'section 2.1 heading')
 
     for where, value, actual, label in [

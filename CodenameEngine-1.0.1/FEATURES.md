@@ -1,4 +1,6 @@
 # Codename Engine features
+
+**English** | [中文摘要](../docs/zh-CN/upstream/README.md)
 This markdown file contains every single feature Codename has, separated into multiple categories. List may be incomplete.
 
 _**QOL = Quality of Life**_

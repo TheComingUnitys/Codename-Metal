@@ -1,29 +1,33 @@
-# Lime 8.3.2 Haxe 补丁（Metal 后端）
+# Lime 8.3.2 Haxe patches (Metal backend)
 
-Metal/bgfx 后端需要 Lime 的 Haxe CFFI/SDL 路径配合，补丁由
-`CodenameEngine-1.0.1/metal/scripts/patch_lime_haxe.py` 幂等应用（`apply.sh` 会自动调用）。
-本目录把它们导出为可上游化的统一补丁：
+**English** | [中文](zh-CN/LIME-PATCHES.md)
 
-- `metal/patches/lime-metal.patch` — 相对 **openfl/lime 8.3.2** 的 Haxe 补丁（11 个文件 / 13 处改动）；
-- `metal/patches/lime-metal.patch.sha256` — 校验和。
+The Metal/bgfx backend needs hooks in Lime's Haxe CFFI/SDL path. They are applied
+idempotently by `CodenameEngine-1.0.1/metal/scripts/patch_lime_haxe.py` (called by
+`apply.sh`). The same set is exported as an upstreamable patch:
 
-> OpenFL 侧另有 3 处候选补丁（GLSL 版本 120）登记在 `patch_lime_haxe.py` 里，
-> 但当前工程不修改 OpenFL 源码（`.haxelib/openfl/git` 中没有 `src/`），因此没有导出。
+- `metal/patches/lime-metal.patch` - Haxe patch against **openfl/lime 8.3.2**
+  (11 files / 13 changes);
+- `metal/patches/lime-metal.patch.sha256` - checksum.
 
-## 应用
+> `patch_lime_haxe.py` also lists three optional OpenFL-side candidates (GLSL version 120),
+> but this project does not modify OpenFL sources (`.haxelib/openfl/git` has no `src/`),
+> so they are not exported.
 
-正常构建不需要手动打补丁：
+## Applying
+
+A normal build needs no manual patch step:
 
 ```sh
 ./metal/scripts/apply.sh --lime "$HOME/haxelib-dev/lime-832" --build --deploy
 ```
 
-`apply.sh` 调用 `patch_lime_haxe.py`（幂等，可重复运行）。
+`apply.sh` invokes `patch_lime_haxe.py` (idempotent; safe to re-run).
 
-## 重新生成补丁
+## Regenerating the patch
 
 ```sh
-# 取一份未打补丁的上游源码
+# pristine upstream checkout
 git clone --depth 1 --branch 8.3.2 https://github.com/openfl/lime /tmp/lime-pristine
 
 ./metal/scripts/export-lime-patches.sh \
@@ -32,24 +36,24 @@ git clone --depth 1 --branch 8.3.2 https://github.com/openfl/lime /tmp/lime-pris
   --out metal/patches --verify
 ```
 
-`--verify` 会把生成的补丁应用到 pristine 副本，并逐文件与当前已打补丁的 Lime 对比；
-全部一致才通过。
+`--verify` applies the generated patch to a copy of the pristine tree and diffs every file
+against the live patched checkout; it only passes when all files match.
 
-## 升级 Lime 的步骤
+## Upgrading Lime
 
-1. 把 `~/haxelib-dev/lime-832` 更新到目标版本（新的 dev checkout）；
-2. 重新跑 `patch_lime_haxe.py`（补丁按锚点匹配；锚点失效会报错并给出上下文）；
-3. 更新 `export-lime-patches.sh` 里记录的 pristine 版本并重新生成补丁；
-4. 跑 `./verify.sh --with-native` 与（可构建时）一次游戏启动，确认无回归。
+1. update `~/haxelib-dev/lime-832` to the target version;
+2. re-run `patch_lime_haxe.py` (anchored patches; a moved anchor fails with context);
+3. bump the pristine version used by `export-lime-patches.sh` and regenerate the patch;
+4. run `./verify.sh --with-native` and, when building, one game launch to confirm no regression.
 
-## 上游化
+## Upstreaming
 
-`lime-metal.patch` 是标准 `git apply` 格式，可直接用于给 openfl/lime 提 PR。
-补丁内容分三类：
+`lime-metal.patch` is a standard `git apply` patch and can be sent as a PR to openfl/lime.
+It contains three kinds of changes:
 
-1. `NativeCFFI.hx`：Metal 后端的 `cne_metal_*` / `lime_metal_*` CFFI 声明；
-2. `NativeOpenGLRenderContext.hx`：shader 创建/编译/链接钩子（把 GLSL 交给 AOT/翻译器，
-   MSL 再交给 bgfx）；
-3. `GLSLSourceAssembler.hx`-类改动（若启用）：`#version` 120。
+1. `NativeCFFI.hx`: `cne_metal_*` / `lime_metal_*` CFFI declarations for the backend;
+2. `NativeOpenGLRenderContext.hx`: shader create/compile/link hooks (GLSL goes to the
+   AOT cache/translator, MSL goes to bgfx);
+3. GLSL version changes (`#version` 120) when enabled.
 
-修改这些文件后请重新导出补丁，并在提交信息里写明 Lime 版本。
+After touching these files, re-export the patch and mention the Lime version in the commit.

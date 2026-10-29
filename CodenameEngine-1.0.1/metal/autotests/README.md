@@ -1,5 +1,7 @@
 # Pixel regression (Metal backend)
 
+**English** | [中文](../../../docs/zh-CN/metal/autotests/README.md)
+
 Captures raw frames with `CNE_METAL_SHOT_RAW` and compares them with goldens.
 
 ## Quick start

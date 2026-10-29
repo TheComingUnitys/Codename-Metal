@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../docs/zh-CN/upstream/README.md)
+
 ## DEV (PRIVATE) REPO INSTRUCTIONS TO SYNC UP WITH IT INSTEAD OF SYNCING WITH THE PUBLIC ONE
 - Open a Command Prompt window in the public codename repo folder
 - Type those commands:

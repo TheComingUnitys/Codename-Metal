@@ -1,5 +1,7 @@
 # Friday Night Funkin' - Codename Engine (WIP)
 
+**English** | [中文摘要](../docs/zh-CN/upstream/README.md)
+
 ## PLEASE NOTE - THIS IS STILL IN A BETA STATE
 ### Mods created with beta versions of Codename may not be compatible with the release version
 Known issues in the beta:

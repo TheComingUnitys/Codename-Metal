@@ -1,5 +1,7 @@
 # Lime / OpenFL Haxe hooks for the Metal (bgfx) backend
 
+**English** | [中文](../../../../../../docs/zh-CN/metal/haxe/LimePatches.md)
+
 This document describes the patches installed by
 [`metal/scripts/patch_lime_haxe.py`](../../../../scripts/patch_lime_haxe.py) and *why* each one
 exists.

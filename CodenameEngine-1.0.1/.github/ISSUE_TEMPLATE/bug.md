@@ -1,3 +1,5 @@
+**English** | [中文摘要](../../../docs/zh-CN/upstream/README.md)
+
 ---
 name: Bug Report
 about: Report a bug or critical performance issue

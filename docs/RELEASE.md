@@ -1,5 +1,7 @@
 # Release checklist (Metal backend)
 
+**English** | [中文](zh-CN/RELEASE.md)
+
 This is the pipeline used for the Metal fork releases (`v1.0.1-metal.x`).
 
 ## 1. Verify the source
