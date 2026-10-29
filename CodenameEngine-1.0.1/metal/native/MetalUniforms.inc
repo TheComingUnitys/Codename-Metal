@@ -284,6 +284,13 @@ namespace {
 
 } // namespace
 
+// Exposed to the pre-include part of MetalBindings.cpp (lime_gl_get_integerv) so the
+// pname table exists exactly once.
+int QueryIntegersGL (int pname, int* out, int capacity)
+{
+	return QueryIntegers (pname, out, capacity);
+}
+
 // ==================================================================== uniform*uiv
 
 //@impl lime_gl_uniform1ui

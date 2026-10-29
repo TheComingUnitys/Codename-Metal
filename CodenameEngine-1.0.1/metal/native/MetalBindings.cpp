@@ -82,6 +82,9 @@ namespace lime {
 	*/
 	int CollectConstantAttribs (int* locations, float* values, int maxCount);
 
+	/** Defined in MetalUniforms.inc (bridge to its anonymous-namespace pname table). */
+	int QueryIntegersGL (int pname, int* out, int capacity);
+
 	namespace {
 
 		// ---------------------------------------------------------------- GL enums
@@ -114,6 +117,7 @@ namespace lime {
 			GL_FLOAT = 0x1406,
 			GL_UNSIGNED_SHORT = 0x1403,
 			GL_UNSIGNED_INT = 0x1405,
+			GL_SHORT = 0x1402,
 			GL_TRIANGLES = 0x0004,
 			GL_TRIANGLE_STRIP = 0x0005,
 			GL_LINES = 0x0001,
@@ -127,7 +131,20 @@ namespace lime {
 			// Client-data formats.  GL_BGRA and GL_BGRA_EXT are the same enum; CoreGraphics
 			// and macOS decoders hand out BGRA bytes, which is why these matter here.
 			GL_BGRA = 0x80E1,        // == GL_BGRA_EXT
-			GL_BGRA8_EXT = 0x93A1
+			GL_BGRA8_EXT = 0x93A1,
+
+			// Narrower client formats: they are expanded to RGBA8 before upload so that
+			// bgfx never reads past the client buffer (see ExpandToRgba).
+			GL_RED = 0x1903,
+			GL_ALPHA = 0x1906,
+			GL_RGB = 0x1907,
+			GL_LUMINANCE = 0x1909,
+			GL_LUMINANCE_ALPHA = 0x190A,
+			GL_RG = 0x8227,
+			GL_UNSIGNED_SHORT_5_6_5 = 0x8363,
+			GL_UNSIGNED_SHORT_4_4_4_4 = 0x8033,
+			GL_UNSIGNED_SHORT_5_5_5_1 = 0x8034,
+			GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368
 		};
 
 		// ---------------------------------------------------------------- payload helpers
@@ -1002,16 +1019,83 @@ namespace lime {
 				: uint64_t (bgfx::TextureFormat::RGBA8);
 		}
 
-		uint32_t BytesPerPixel (int format, int type)
+		/** Component count of a GL client pixel format (0 when unknown). */
+		static uint32_t SourceComponents (int format)
 		{
 			switch (format)
 			{
-				case GL_RGBA: return (type == GL_FLOAT) ? 16 : 4;
+				case GL_RGBA:
 				case GL_BGRA:
-				case GL_BGRA8_EXT: return (type == GL_FLOAT) ? 16 : 4;
-				default: return 4;
+				case GL_BGRA8_EXT: return 4;
+				case GL_RGB: return 3;
+				case GL_RG:
+				case GL_LUMINANCE_ALPHA: return 2;
+				case GL_RED:
+				case GL_LUMINANCE:
+				case GL_ALPHA: return 1;
+				default: return 0;
 			}
 		}
+
+		uint32_t BytesPerPixel (int format, int type)
+		{
+			// Packed client types describe a whole texel, not a component.
+			switch (type)
+			{
+				case GL_UNSIGNED_SHORT_5_6_5:
+				case GL_UNSIGNED_SHORT_4_4_4_4:
+				case GL_UNSIGNED_SHORT_5_5_5_1: return 2;
+				case GL_UNSIGNED_INT_2_10_10_10_REV: return 4;
+				default: break;
+			}
+
+			uint32_t comps = SourceComponents (format);
+			if (comps == 0) comps = 4;   // unknown: keep the historical assumption
+
+			uint32_t componentBytes = 1;
+			if (type == GL_FLOAT) componentBytes = 4;
+			else if (type == GL_UNSIGNED_SHORT || type == GL_SHORT) componentBytes = 2;
+			return comps * componentBytes;
+		}
+
+		/** True when the client data is narrower than RGBA8 and must be expanded. */
+		static bool FormatNeedsRgbaExpansion (int format, int type)
+		{
+			if (type != GL_UNSIGNED_BYTE) return false;
+			uint32_t comps = SourceComponents (format);
+			return comps > 0 && comps < 4 && format != GL_BGRA && format != GL_BGRA8_EXT;
+		}
+
+		/** Expands 1/2/3-component client pixels to RGBA8 (alpha = 1 unless GL_ALPHA). */
+		static void ExpandToRgba (const uint8_t* src, int width, int height, int format, std::vector<uint8_t>& out)
+		{
+			const size_t pixels = (size_t)width * (size_t)height;
+			out.resize (pixels * 4);
+
+			const uint32_t comps = SourceComponents (format);
+			for (size_t p = 0; p < pixels; ++p)
+			{
+				const uint8_t* s = src + p * comps;
+				uint8_t* d = out.data () + p * 4;
+
+				switch (comps)
+				{
+					case 1:
+						if (format == GL_ALPHA) { d[0] = 0; d[1] = 0; d[2] = 0; d[3] = s[0]; }
+						else if (format == GL_RED) { d[0] = s[0]; d[1] = 0; d[2] = 0; d[3] = 255; }
+						else { d[0] = s[0]; d[1] = s[0]; d[2] = s[0]; d[3] = 255; }   // LUMINANCE
+						break;
+					case 2:
+						if (format == GL_RG) { d[0] = s[0]; d[1] = s[1]; d[2] = 0; d[3] = 255; }
+						else { d[0] = s[0]; d[1] = s[0]; d[2] = s[0]; d[3] = s[1]; }   // LUMINANCE_ALPHA
+						break;
+					default:
+						d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255;
+						break;
+				}
+			}
+		}
+
 
 		uint64_t ToBgfxDepthFunc (int glFunc)
 		{
@@ -4830,6 +4914,22 @@ namespace lime {
 				else
 				{
 					EnsureFramebuffer (target);
+
+					// View ids 0..199 are reserved for offscreen passes and 250+ for the screen.
+					// Frame recordings with more than 200 distinct (fbo, attachment) pairs are
+					// pathological, but silently reusing an id makes the failure hard to see, so
+					// say it once.
+					if (gNextFboView >= 199)
+					{
+						static bool warnedViewLimit = false;
+						if (!warnedViewLimit)
+						{
+							warnedViewLimit = true;
+							std::fprintf (stderr, "[cne-view] offscreen view limit (199/frame) reached; further targets reuse view 199\n");
+							std::fflush (stderr);
+						}
+					}
+
 					gActiveView = gNextFboView;
 					if (gNextFboView < 199) ++gNextFboView;
 				}
@@ -7056,14 +7156,11 @@ namespace lime {
 		int* out = reinterpret_cast<int*> (PointerFromDouble (params));
 		if (out == nullptr) return;
 
-		switch (pname)
-		{
-			case GL_MAX_TEXTURE_SIZE: out[0] = 16384; break;
-			case GL_VIEWPORT:
-				std::memcpy (out, MetalContext::state.viewport, sizeof (MetalContext::state.viewport));
-				break;
-			default: out[0] = 0; break;
-		}
+		// The pname table lives in MetalUniforms.inc (same answers as get_floatv /
+		// get_booleanv); this used to hardcode two pnames and return 0 for everything
+		// else, which made engines/tools probing GL limits see zeros.
+		const int count = QueryIntegersGL (pname, out, 4);
+		if (count <= 0) out[0] = 0;
 	}
 
 	//@impl lime_gl_finish

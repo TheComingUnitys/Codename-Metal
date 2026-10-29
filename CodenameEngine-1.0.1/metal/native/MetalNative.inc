@@ -798,14 +798,30 @@
 			}
 		}
 
+		// GL client formats narrower than RGBA (ALPHA, LUMINANCE, RED, RG, RGB, ...) are
+		// expanded on the CPU.  Passing them straight to bgfx used to copy 4 bytes per
+		// pixel out of a 1-byte-per-pixel client buffer (out-of-bounds read + wrong
+		// image).  Expansion also gives them the RGBA8 texture format bgfx can sample.
+		int uploadFormat = format;
+		const uint8_t* source = PointerFromDouble (data);
+		std::vector<uint8_t> expanded;
+
+		if (FormatNeedsRgbaExpansion (format, type))
+		{
+			if (source != nullptr) ExpandToRgba (source, width, height, format, expanded);
+			else expanded.assign ((size_t)width * (size_t)height * 4, 0);
+			source = expanded.data ();
+			uploadFormat = GL_RGBA;
+		}
+
 		texture->width = width;
 		texture->height = height;
-		texture->format = format;
+		texture->format = uploadFormat;
 		texture->internalFormat = internalformat;
 		texture->type = type;
 		texture->hasData = true;
 
-		const uint32_t bpp = BytesPerPixel (format, type);
+		const uint32_t bpp = BytesPerPixel (uploadFormat, type);
 		const size_t rowBytes = (size_t)width * bpp;
 		const size_t needed = rowBytes * (size_t)height;
 
@@ -813,7 +829,6 @@
 		// frame, so re-assigning the vector (zero fill + allocation) was pure overhead here.
 		if (texture->pixels.size () != needed) texture->pixels.resize (needed, 0);
 
-		const uint8_t* source = PointerFromDouble (data);
 		if (source != nullptr && needed > 0)
 		{
 			std::memcpy (texture->pixels.data (), source, needed);
@@ -828,7 +843,7 @@
 		// Record the bgfx format actually used: promoting this texture to a render target
 		// later needs exactly this format to recreate it.
 		const bgfx::TextureFormat::Enum bgfxFmt =
-			(bgfx::TextureFormat::Enum)ToBgfxFormat (internalformat, format, type);
+			(bgfx::TextureFormat::Enum)ToBgfxFormat (internalformat, uploadFormat, type);
 		texture->bgfxFormat = bgfxFmt;
 
 		// A texture created with no pixel data is a render target: OpenFL allocates offscreen

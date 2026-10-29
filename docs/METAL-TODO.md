@@ -164,10 +164,10 @@
 
 | # | 隐患 | 现状/证据 | 建议 |
 | --- | --- | --- | --- |
-| 5.1 | **纹理格式回退导致越界读**：`GL_ALPHA/LUMINANCE/LUMINANCE_ALPHA` 等未映射格式退化为 `RGBA8` + 4 B/px（`BytesPerPixel` 默认 4，`MetalBindings.cpp:945`），2D 上传按 `width*4*height` `memcpy`（`MetalNative.inc` `cne_metal_tex_image_2d`） | 默认内容不触发；mod 一旦用 alpha-only 贴图即越界读（内存安全，不只是画面） | 按真实 bpp 计算行宽/总量，未映射格式显式报错；参考 `MetalTextures.inc` 的 `BytesPerTexel` |
-| 5.2 | **离屏 view id 上限**：每帧离屏 view 0..199（`MetalBindings.cpp:4513,4661` 到 199 后不再递增） | 单帧目标切换 >200 次时会复用 view id，理论上可导致排序/目标错乱 | 改为按需分配 + 超过阈值时合并/报警，或改用直连 Metal 视图 |
+| 5.1 | ~~纹理格式回退导致越界读~~ **已修复** | `BytesPerPixel` 现在按真实分量数/打包类型计算；`GL_ALPHA/LUMINANCE/RED/RG/LA/RGB` 在上传前用 `ExpandToRgba` 在 CPU 展开为 RGBA8（`MetalNative.inc`），不再按 4 B/px 越界 `memcpy` | 已覆盖 8-bit 窄格式；未知格式仍走旧回退并保留告警 |
+| 5.2 | 离屏 view id 上限：每帧 0..199，超限后复用 199 | 单帧目标切换 >200 次才会触发；现在**超限时打印一次** `[cne-view] offscreen view limit ...` 警告，不再静默 | 仍可改为直连 Metal 视图/动态视图池 |
 | 5.3 | `framebuffer_renderbuffer` 只记 `renderbuffer` 字段；`renderbuffer_storage` 是空实现（不存尺寸） | mask 若用 renderbuffer 做模板附件将无法创建对应附件 | 随 3.1 一起实现（记录尺寸并创建 stencil 附件） |
-| 5.4 | `lime_gl_get_integerv` 只有 2 个 pname（`GL_MAX_TEXTURE_SIZE`/`GL_VIEWPORT`），其它返回 0；`get_integer` 较全 | 部分库/mod 查询状态会拿到 0 | 逐步补齐（参照 `MetalUniforms.inc:158+` 的表） |
+| 5.4 | ~~`get_integerv` 只有 2 个 pname~~ **已修复** | `lime_gl_get_integerv` 改为委托 `QueryIntegersGL`（`MetalUniforms.inc` 的 pname 表，与 `get_floatv/get_booleanv` 同源） | 未知 pname 仍返回 0，但常见 GL limit/state 查询已一致 |
 | 5.5 | 未注册的死代码：`lime_gl_clear_depth`、`lime_gl_blend_barrier`；`ViewForFramebuffer/nextFramebufferView` 无运行时调用 | 无害，增加审计噪音 | 清理或注明"proto only" |
 
 ---
