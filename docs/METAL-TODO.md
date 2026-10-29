@@ -177,16 +177,16 @@
 本轮为让 Dusttale 的 shader 被翻译，曾对 **mod 文件**做最小修补（用户已要求后续不要再改 mod）。
 要让"未修改的 mod"直接可用，需要把这些兼容规则做进 `GLSLToMSL`：
 
-| # | 需要支持的写法 | 涉及文件（本轮临时修补） |
-| --- | --- | --- |
-| 1 | 文件级全局变量（`float ns;`）→ 常量地址空间/静态量处理 | mod `snow/blue/lab_dust/light/dust/waving.frag` |
-| 2 | 函数名遮蔽：局部变量 `float min/...` 与内置函数同名 | flxanimate `FilterShader`；mod `iconshader.frag` |
-| 3 | 函数式构造 `float(vec3)`、`int(...)` 等标量提取 | mod `light_preprocess/heatlight/impact_frames*/...` |
-| 4 | `radians()` 等 OpenFL/GLSL 内置未映射函数 | mod `DropShadow/hue/adjustColor.frag` |
-| 5 | 前向声明/函数定义顺序（`noise1` 先用后定义）或自动补声明 | mod `firething.frag` |
-| 6 | 非 const 引用绑定向量元素（`v.x` 传引用） | mod `scaryGlitch/vhs`（另 2 个 3D/filter 也报同类） |
-| 7 | `mat4` 参数展开/构造（`saturation.frag`） | mod `saturation.frag` |
-| 8 | 块注释预处理（已修），多行宏、`#version` 变体等边界继续补测试 | `Preprocessor.hx` |
+| # | 需要支持的写法 | 状态 | 涉及文件（本轮临时修补） |
+| --- | --- | --- | --- |
+| 1 | 文件级全局变量（`float ns;`）→ 常量地址空间/静态量处理 | 部分（常量全局已加 `constant`） | mod `snow/blue/lab_dust/light/dust/waving.frag` |
+| 2 | 函数名遮蔽：局部变量 `float min/...` 与内置函数同名 | ✅ `renameShadowedParameters` | flxanimate `FilterShader`；mod `iconshader.frag` |
+| 3 | 函数式构造 `float(vec3)`、`int(...)` 等标量提取 | ✅ 已实现 + 单测 | mod `light_preprocess/heatlight/impact_frames*/...` |
+| 4 | `radians()` 等 OpenFL/GLSL 内置未映射函数 | ✅ `glsl_radians/degrees` + 单测 | mod `DropShadow/hue/adjustColor.frag` |
+| 5 | 前向声明/函数定义顺序（`noise1` 先用后定义）或自动补声明 | ✅ `injectFunctionPrototypes` + 单测（`firething` 仍缺函数定义本身） | mod `firething.frag` |
+| 6 | 非 const 引用绑定向量元素（`v.x` 传引用） | ✅ swizzle 复合赋值重写 + 单测 | mod `scaryGlitch/vhs`（另 2 个 3D/filter 也报同类） |
+| 7 | `mat4` 参数展开/构造（`saturation.frag`） | 待办 | mod `saturation.frag` |
+| 8 | 块注释预处理（已修），多行宏、`#version` 变体等边界继续补测试 | ✅ 块注释 + 函数式宏单测 | `Preprocessor.hx` |
 
 验收：用**未修改的** mod 目录 + `CNE_METAL_AOT_RUNTIME_TRANSLATE=0` 启动，日志无 `GLSL->MSL failed`，画面正常。
 
@@ -200,6 +200,7 @@
 | ~~AOT 失败不阻塞构建~~ **已修复** | `gen_shader_aot.py --strict` 对照 `metal/audit/aot-expected.json`（允许的 4 个 mod 失败 + 最低 metallib 覆盖率）；`--check` 不再改动工作区 | CI 已通过 `verify.sh` 使用 strict |
 | 文档/缓存数字不同步 | `README.MD` / `METAL-TODO.md` 中的 116/112 等数字是快照 | ✅ `metal/scripts/check-docs.py` 自动校验（已接入 `verify.sh` 与 GitHub Action） |
 | ~~没有一键验证入口~~ **已修复** | 各检查散落在不同脚本 | ✅ 根目录 `verify.sh`：翻译器测试 + AOT 严格审计 + 文档校验（`--no-aot` / `--with-native` 可选） |
+| ~~翻译器回归无单测~~ **已修复** | 翻译器规则此前只靠真实 shader 间接覆盖 | ✅ `TestTranslateCompat.hx`（34 项）+ `TestTranslate.hx`（40 项），`verify.sh` 自动执行 |
 | 无自动化像素回归 | 目前全靠手工截图 + `diff.py` | 用 `metal/tools/native_replay` + 录制帧建立金帧对比（逐像素 diff），纳入脚本 |
 | 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
 | 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |

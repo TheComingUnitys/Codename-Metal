@@ -70,6 +70,9 @@ class BgfxAbi
 			+ 'inline float4x4 glsl_matrixCompMult(float4x4 a, float4x4 b) { return float4x4(a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]); }\n'
 			+ 'inline float3x3 glsl_matrixCompMult(float3x3 a, float3x3 b) { return float3x3(a[0] * b[0], a[1] * b[1], a[2] * b[2]); }\n'
 			+ 'inline float2x2 glsl_matrixCompMult(float2x2 a, float2x2 b) { return float2x2(a[0] * b[0], a[1] * b[1]); }\n'
+			// MSL has no radians()/degrees() (GLSL does); T(...) keeps vectors working.
+			+ 'template <typename T> inline T glsl_radians(T deg) { return deg * T(0.017453292519943295); }\n'
+			+ 'template <typename T> inline T glsl_degrees(T rad) { return rad * T(57.29577951308232); }\n'
 			+ '\n';
 	}
 }

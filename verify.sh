@@ -37,6 +37,7 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 step "1/3 translator unit tests"
 "$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslate --interp
+"$HAXE" -cp "$PROJECT/metal/haxe" -main lime.graphics.metal.TestTranslateCompat --interp
 
 if [ "$RUN_AOT" = "1" ]; then
 	step "2/3 AOT cache staleness + strict coverage audit"

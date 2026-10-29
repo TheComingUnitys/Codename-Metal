@@ -220,6 +220,9 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/
 ./verify.sh --with-native   # 额外跑上面的 C++/bgfx 编译检查
 ```
 
+- **翻译器单测**：`TestTranslate`（40 项）+ `TestTranslateCompat`（34 项），覆盖数组 varying、
+  数组构造、截断式向量/标量构造、标量/无长度 uniform 数组、swizzle 复合赋值、内置函数映射、
+  原型提升、重载参数折叠等规则；
 - `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
   且 `.metallib` 覆盖率不得低于 `metal/audit/aot-expected.json` 中登记的下限
   （当前 112/116，允许 4 个 mod shader 回退）；

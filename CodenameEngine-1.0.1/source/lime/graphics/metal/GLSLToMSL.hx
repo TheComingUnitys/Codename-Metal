@@ -838,6 +838,14 @@ class GLSLToMSL
 						out.add('dfdy');
 						i++;
 						continue;
+					case 'radians':
+						out.add('glsl_radians');
+						i++;
+						continue;
+					case 'degrees':
+						out.add('glsl_degrees');
+						i++;
+						continue;
 					case 'atan':
 						// 2-argument atan(y, x) is atan2 in MSL
 						var p = i + 1;
@@ -1385,6 +1393,18 @@ class GLSLToMSL
 			}
 			if (t.kind == Ident && t.text == 'dFdx') { out.add('dfdx'); i++; continue; }
 			if (t.kind == Ident && t.text == 'dFdy') { out.add('dfdy'); i++; continue; }
+			if (t.kind == Ident && t.text == 'radians') { out.add('glsl_radians'); i++; continue; }
+			if (t.kind == Ident && t.text == 'degrees') { out.add('glsl_degrees'); i++; continue; }
+			if (t.kind == Ident && t.text == 'atan')
+			{
+				var p2 = i + 1;
+				if (p2 < toks.length && toks[p2].kind == Punct && toks[p2].text == '(' && topLevelComma (toks, p2) >= 0)
+				{
+					out.add ('atan2');
+					i++;
+					continue;
+				}
+			}
 			if (t.kind == Ident && (t.text == 'lessThan' || t.text == 'lessThanEqual' || t.text == 'greaterThan' || t.text == 'greaterThanEqual'
 				|| t.text == 'equal' || t.text == 'notEqual'))
 			{
@@ -1915,21 +1935,36 @@ class GLSLToMSL
 		for (name in localTypes.keys ())
 		{
 			var comps = vectorComponents (localTypes.get (name));
-			if (comps <= 2) continue;
+			if (comps < 2) continue;
+
 			for (target in [2, 3])
 			{
 				if (comps <= target) continue;
-				var re = new EReg ('float' + Std.string (target) + '\\s*\\(\\s*' + name + '\\s*\\)', 'g');
-				var search = 0;
-				while (true)
-				{
-					if (!re.match (out.substr (search))) break;
-					var m = re.matchedPos ();
-					var at = search + m.pos;
-					out = out.substring (0, at) + '(' + name + ').' + swizzleFor (target) + out.substring (at + m.len);
-					search = at + name.length + 3;
-				}
+				out = replaceTextual (out, 'float' + Std.string (target) + '\\s*\\(\\s*' + name + '\\s*\\)',
+					'(' + name + ').' + swizzleFor (target));
 			}
+
+			// Scalar extraction: GLSL's float(vec4) / int(vec4) / bool(vec4).
+			out = replaceTextual (out, '\\bfloat\\s*\\(\\s*' + name + '\\s*\\)', '(' + name + ').x');
+			out = replaceTextual (out, '\\bint\\s*\\(\\s*' + name + '\\s*\\)', 'int((' + name + ').x)');
+			out = replaceTextual (out, '\\bbool\\s*\\(\\s*' + name + '\\s*\\)', '((' + name + ').x != 0.0)');
+		}
+		return out;
+	}
+
+	/** Repeated regex replacement (Haxe EReg.replace() has no callback/backreferences). */
+	function replaceTextual (code:String, pattern:String, replacement:String):String
+	{
+		var re = new EReg (pattern, 'g');
+		var out = code;
+		var search = 0;
+		while (true)
+		{
+			if (!re.match (out.substr (search))) break;
+			var m = re.matchedPos ();
+			var at = search + m.pos;
+			out = out.substring (0, at) + replacement + out.substring (at + m.len);
+			search = at + replacement.length;
 		}
 		return out;
 	}
