@@ -40,6 +40,7 @@ Codename-Metal/
 ├── docs/
 │   ├── METAL-TODO.md          ← 仅剩待办（架构/AOT/2D 功能/3D/工程债）
 │   ├── DIAGNOSTICS.md         ← 诊断/测试手册（diag.sh、日志格式、抓帧回放、像素回归）
+│   ├── LIME-PATCHES.md        ← Lime 补丁清单/重新生成/升级流程
 │   └── RELEASE.md             ← 发布流程（universal + DMG + tag/Release）
 ├── CodenameEngine-1.0.1/      ← 游戏工程（上游 CNE 1.0.1 源码 + 本仓库的 Metal 改动）
 │   ├── project.xml
@@ -132,6 +133,8 @@ haxelib dev lime ~/haxelib-dev/lime-832
 ```
 
 补丁由 `metal/scripts/apply.sh` 自动应用（见 §6），无需手工编辑。
+补丁已同时导出为可上游化的 `metal/patches/lime-metal.patch`（含 SHA-256、
+`export-lime-patches.sh --verify` 校验与升级步骤，详见 [docs/LIME-PATCHES.md](docs/LIME-PATCHES.md)）。
 
 ### 5.4 bgfx（Metal 静态库）
 

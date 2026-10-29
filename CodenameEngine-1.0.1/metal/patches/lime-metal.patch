@@ -1,0 +1,174 @@
+diff --git a/src/lime/_internal/backend/native/NativeCFFI.hx b/src/lime/_internal/backend/native/NativeCFFI.hx
+--- a/src/lime/_internal/backend/native/NativeCFFI.hx
++++ b/src/lime/_internal/backend/native/NativeCFFI.hx
+@@ -234,6 +234,7 @@
+ 	@:cffi private static function lime_lzma_compress(data:Dynamic, bytes:Dynamic):Dynamic;
+ 
+ 	@:cffi private static function lime_lzma_decompress(data:Dynamic, bytes:Dynamic):Dynamic;
++
+ 
+ 	@:cffi private static function lime_mouse_event_manager_register(callback:Dynamic, eventObject:Dynamic):Void;
+ 
+@@ -525,6 +526,16 @@
+ 		false));
+ 	private static var lime_lzma_decompress = new cpp.Callable<cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime", "lime_lzma_decompress", "ooo",
+ 		false));
++	#if metal
++	// [cne-metal] NativeCFFI: cpp loaders
++	// `lime_lzma_decompress` (previous line) is the model: Dynamic -> cpp.Object -> 'o'.
++	// The native `lime_metal_configure_program` is `value (value, value, value)`, hence
++	// "iooo" and a cpp.Object return (see cffi::CheckSig3 in hxcpp's hx/CFFIPrime.h).
++	// `lime_metal_is_metal():Int` mirrors `lime_system_get_num_displays` ("i", Void->Int).
++	private static var lime_metal_configure_program = new cpp.Callable<Int->cpp.Object->cpp.Object->cpp.Object>(cpp.Prime._loadPrime("lime",
++		"lime_metal_configure_program", "iooo", false));
++	private static var lime_metal_is_metal = new cpp.Callable<Void->Int>(cpp.Prime._loadPrime("lime", "lime_metal_is_metal", "i", false));
++	#end
+ 	private static var lime_mouse_event_manager_register = new cpp.Callable<cpp.Object->cpp.Object->cpp.Void>(cpp.Prime._loadPrime("lime",
+ 		"lime_mouse_event_manager_register", "oov", false));
+ 	private static var lime_neko_execute = new cpp.Callable<String->cpp.Void>(cpp.Prime._loadPrime("lime", "lime_neko_execute", "sv", false));
+@@ -732,6 +743,14 @@
+ 	private static var lime_key_event_manager_register = CFFI.load("lime", "lime_key_event_manager_register", 2);
+ 	private static var lime_lzma_compress = CFFI.load("lime", "lime_lzma_compress", 2);
+ 	private static var lime_lzma_decompress = CFFI.load("lime", "lime_lzma_decompress", 2);
++	#if metal
++	// [cne-metal] NativeCFFI: neko loaders
++	// Same two primitives as the cpp branch, loaded by argument count like every other
++	// neko primitive.  lime.system.CFFI.load degrades to a reporting stub when the ndll
++	// does not export them, so this stays non-fatal on stock Lime builds.
++	private static var lime_metal_configure_program = CFFI.load("lime", "lime_metal_configure_program", 3);
++	private static var lime_metal_is_metal = CFFI.load("lime", "lime_metal_is_metal", 0);
++	#end
+ 	private static var lime_mouse_event_manager_register = CFFI.load("lime", "lime_mouse_event_manager_register", 2);
+ 	private static var lime_neko_execute = CFFI.load("lime", "lime_neko_execute", 1);
+ 	private static var lime_orientation_event_manager_register = CFFI.load("lime", "lime_orientation_event_manager_register", 2);
+@@ -1180,6 +1199,23 @@
+ 		return null;
+ 	}
+ 
++	#if metal
++	// [cne-metal] NativeCFFI: hl natives
++	// hl counterpart of the two Metal primitives (naming follows the hl_* GL entries).
++	// The tables stay `Dynamic` here: MetalShaderBridge passes a Haxe Array, while hl
++	// primitives speak varray (cf. `hl_gl_draw_buffers(buffers:hl.NativeArray<Int>)`).
++	@:hlNative("lime", "hl_metal_configure_program") private static function lime_metal_configure_program(program:Int, attributeMap:Dynamic,
++		uniformMap:Dynamic):Dynamic
++	{
++		return null;
++	}
++
++	@:hlNative("lime", "hl_metal_is_metal") private static function lime_metal_is_metal():Int
++	{
++		return 0;
++	}
++	#end
++
+ 	@:hlNative("lime", "hl_mouse_event_manager_register") private static function lime_mouse_event_manager_register(callback:Void->Void,
+ 		eventObject:MouseEventInfo):Void {}
+ 
+diff --git a/src/lime/_internal/backend/native/NativeOpenGLRenderContext.hx b/src/lime/_internal/backend/native/NativeOpenGLRenderContext.hx
+--- a/src/lime/_internal/backend/native/NativeOpenGLRenderContext.hx
++++ b/src/lime/_internal/backend/native/NativeOpenGLRenderContext.hx
+@@ -25,6 +25,12 @@
+ import lime.utils.Float32Array;
+ import lime.utils.Int32Array;
+ import lime.utils.UInt32Array;
++#if metal
++// [cne-metal] NativeOpenGLRenderContext: bridge import
++// The bridge is installed next to lime's own classes by metal/scripts/apply.sh
++// (src/lime/graphics/metal/MetalShaderBridge.hx).
++import lime.graphics.metal.MetalShaderBridge;
++#end
+ 
+ #if !lime_debug
+ @:fileXml('tags="haxe,release"')
+@@ -680,6 +686,12 @@
+ 		}
+ 
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
++		#if metal
++		// [cne-metal] hook: attachShader
++		// linkProgram must know which shaders belong to a program to collect the
++		// attribute/uniform tables; the native GL call itself is a no-op under bgfx.
++		MetalShaderBridge.onAttachShader(__getObjectID(program), __getObjectID(shader));
++		#end
+ 		NativeCFFI.lime_gl_attach_shader(__getObjectID(program), __getObjectID(shader));
+ 		#end
+ 	}
+@@ -701,6 +713,12 @@
+ 	public function bindAttribLocation(program:GLProgram, index:Int, name:String):Void
+ 	{
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
++		#if metal
++		// [cne-metal] hook: bindAttribLocation
++		// OpenFL chooses the GL attribute locations; remember name -> location so
++		// linkProgram can map them onto the bgfx a_* slots of the translated MSL.
++		MetalShaderBridge.onBindAttribLocation(__getObjectID(program), index, name);
++		#end
+ 		NativeCFFI.lime_gl_bind_attrib_location(__getObjectID(program), index, name);
+ 		#end
+ 	}
+@@ -1064,6 +1082,12 @@
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
+ 		var id = NativeCFFI.lime_gl_create_shader(type);
+ 		if (id == 0) return null;
++		#if metal
++		// [cne-metal] hook: createShader
++		// Remember whether this id is a vertex or a fragment shader; shaderSource needs it to
++		// pick the right half of the MSL translation.
++		MetalShaderBridge.onCreateShader(id, type);
++		#end
+ 		var object = new GLObject(id);
+ 		object.ptr = NativeCFFI.lime_gl_object_register(id, GLObjectType.SHADER, object);
+ 		return object;
+@@ -1138,6 +1162,11 @@
+ 	{
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
+ 		if (program != null) NativeCFFI.lime_gl_object_deregister(program);
++		#if metal
++		// [cne-metal] hook: deleteProgram
++		// Drop the per-program attribute/shader bookkeeping.
++		MetalShaderBridge.onDeleteProgram(__getObjectID(program));
++		#end
+ 		NativeCFFI.lime_gl_delete_program(__getObjectID(program));
+ 		#end
+ 	}
+@@ -1170,6 +1199,11 @@
+ 	{
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
+ 		if (shader != null) NativeCFFI.lime_gl_object_deregister(shader);
++		#if metal
++		// [cne-metal] hook: deleteShader
++		// Drop the stage flag and the cached translation for this id.
++		MetalShaderBridge.onDeleteShader(__getObjectID(shader));
++		#end
+ 		NativeCFFI.lime_gl_delete_shader(__getObjectID(shader));
+ 		#end
+ 	}
+@@ -2623,7 +2657,13 @@
+ 	{
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
+ 		NativeCFFI.lime_gl_link_program(__getObjectID(program));
++		#if metal
++		// [cne-metal] hook: linkProgram
++		// After linking, hand the attribute map (glLocation -> bgfx slot) and the uniform
++		// descriptor table to the backend through lime_metal_configure_program.
++		MetalShaderBridge.onLinkProgram(__getObjectID(program));
+ 		#end
++		#end
+ 	}
+ 
+ 	public function mapBufferRange(target:Int, offset:DataPointer, length:Int, access:Int):DataPointer
+@@ -2756,6 +2796,13 @@
+ 	public function shaderSource(shader:GLShader, source:String):Void
+ 	{
+ 		#if (lime_cffi && (lime_opengl || lime_opengles) && !macro)
++		#if metal
++		// [cne-metal] hook: shaderSource
++		// Translate the GLSL that OpenFL assembled into MSL *before* it reaches the native
++		// backend; the backend compiles MSL with newLibraryWithSource.  On a translation
++		// failure the bridge returns the original GLSL so the error is visible in the log.
++		source = MetalShaderBridge.onShaderSource(__getObjectID(shader), source);
++		#end
+ 		NativeCFFI.lime_gl_shader_source(__getObjectID(shader), source);
+ 		#end
+ 	}
