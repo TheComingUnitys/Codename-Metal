@@ -842,6 +842,10 @@ class GLSLToMSL
 						out.add('glsl_radians');
 						i++;
 						continue;
+					case 'length':
+						out.add('glsl_length');
+						i++;
+						continue;
 					case 'degrees':
 						out.add('glsl_degrees');
 						i++;
@@ -1394,6 +1398,7 @@ class GLSLToMSL
 			if (t.kind == Ident && t.text == 'dFdx') { out.add('dfdx'); i++; continue; }
 			if (t.kind == Ident && t.text == 'dFdy') { out.add('dfdy'); i++; continue; }
 			if (t.kind == Ident && t.text == 'radians') { out.add('glsl_radians'); i++; continue; }
+			if (t.kind == Ident && t.text == 'length') { out.add('glsl_length'); i++; continue; }
 			if (t.kind == Ident && t.text == 'degrees') { out.add('glsl_degrees'); i++; continue; }
 			if (t.kind == Ident && t.text == 'atan')
 			{

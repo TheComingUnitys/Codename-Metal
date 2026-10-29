@@ -73,6 +73,12 @@ class BgfxAbi
 			// MSL has no radians()/degrees() (GLSL does); T(...) keeps vectors working.
 			+ 'template <typename T> inline T glsl_radians(T deg) { return deg * T(0.017453292519943295); }\n'
 			+ 'template <typename T> inline T glsl_degrees(T rad) { return rad * T(57.29577951308232); }\n'
+			// GLSL's length() accepts scalars too; in MSL length(float) is ambiguous between
+			// the half/float overloads, which broke mod shaders that call it on a component.
+			+ 'inline float glsl_length(float v) { return fabs(v); }\n'
+			+ 'inline float glsl_length(float2 v) { return length(v); }\n'
+			+ 'inline float glsl_length(float3 v) { return length(v); }\n'
+			+ 'inline float glsl_length(float4 v) { return length(v); }\n'
 			+ '\n';
 	}
 }

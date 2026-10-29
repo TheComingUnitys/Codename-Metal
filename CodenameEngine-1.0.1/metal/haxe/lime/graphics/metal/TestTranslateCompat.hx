@@ -209,6 +209,16 @@ void main() {
 void main() {
 	gl_FragColor = vec4(atan(1.0, 2.0));
 }', 'atan2');
+		fragHas('length(float)', '
+void main() {
+	vec2 v = vec2(1.0, 2.0);
+	gl_FragColor = vec4(length(v.x));
+}', 'glsl_length');
+		fragHas('length(vec2)', '
+void main() {
+	vec2 v = vec2(1.0, 2.0);
+	gl_FragColor = vec4(length(v));
+}', 'glsl_length');
 	}
 
 	static function testPrototypes():Void

@@ -43,23 +43,24 @@
 | 项 | 数值 | 影响 |
 | --- | --- | --- |
 | 缓存 stage 总数 | 116（16 vertex / 100 fragment） | — |
-| 已预编译 `.metallib` | **112 / 116** | 其余 4 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
-| 构建期 GLSL→MSL 翻译失败 | **4 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
+| 已预编译 `.metallib` | **113 / 116** | 其余 3 个只能在运行时 `newLibraryWithSource` 编译（首次进入/卡顿风险） |
+| 构建期 GLSL→MSL 翻译失败 | **3 个 stage** | 运行时回退到 `GLSLToMSL` 运行时翻译（`CNE_METAL_AOT_RUNTIME_TRANSLATE` 默认 ON） |
 
-### 2.1 构建期仍失败的 4 个 stage（按错误分类）
+### 2.1 构建期仍失败的 3 个 stage（按错误分类）
 
 | # | shader | 错误摘要 |
 | --- | --- | --- |
 | 1 | `mods/.../cable/fragment` | 依赖 `TWO_PHASE`/`THREE_PHASE` define，未定义时变量缺失（mod 源问题） |
 | 2 | `mods/.../firething/fragment` | 使用了未定义的 `noise1()`（mod 源问题） |
 | 3 | `mods/.../line/fragment` | `gl_FragColor = openfl_TextureCoordv`（vec4 = vec2，非法 GLSL 赋值） |
-| 4 | `mods/.../scaryGlitch/fragment` | `length(float)` 调用有歧义（mod 源码里对分量调用 length） |
+
 
 > 已修复：`wi.fragment`（`_mtl_u` 重复参数）、`vhs.fragment`（swizzle 复合赋值）、
 > 3 个 OpenFL filter shader（`varying vec2 vBlurCoords[5]` 的数组 varying 支持）、
 > `DisplacementMapShader`（GLSL 截断构造 `vec2(vec4)` → `.xy`），以及翻译器增强：顶层 helper 前置声明、
 > 重复作用域参数折叠、GLSL 数组构造 `float[N](...)` → `{...}`。
-> 另修复引擎源码 `source/funkin/backend/shaders/OverlayShader.hx` 的非法 GLSL
+> 另修复 `glsl_length`（GLSL 的 `length(scalar)` 在 MSL 里二义）等内置函数；
+> 修复引擎源码 `source/funkin/backend/shaders/OverlayShader.hx` 的非法 GLSL
 > （`base:Vec3` 伪类型、vec4 重载调用参数不匹配），两个 OverlayShader stage 现已可编译。
 > 另修正 `assets/shaders/engine/editorWaveformsRainbow.frag`：`uniform ivec2 waveformSize` → `vec2`
 > （MSL 没有隐式 int→float 转换，且 Haxe 侧上传的本来就是浮点 [w,h]）。
@@ -69,12 +70,12 @@
 **TODO**：修 `metal/haxe/lime/graphics/metal/GLSLToMSL.hx`，让这些写法可翻译（每类约 1 处规则），
 目标：`failed == 0` 且 `metallib` 覆盖率提升；验收 = 重跑 `python3 metal/scripts/gen_shader_aot.py` 后日志 `failed: 0`。
 
-### 2.2 `.metallib` 只有 112/116
+### 2.2 `.metallib` 只有 113/116
 
 - 原因：本机只有 Command Line Tools，`metal/tools/CompileShaderAot.mm` 对部分 MSL 无法离线编译（日志 `cannot write .metallib`）；
 - TODO：逐条修 `cannot write .metallib` 的 MSL 生成（多为 `_mtl_u`/地址空间/模板辅助函数命名问题），
   或引入完整 Xcode/离线 `xcrun metal` 流程；验收 = `metallib compiled : 116 / 116`。
-- 影响：4 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
+- 影响：3 个 stage 每次冷启动都要在运行时编译 MSL（首次进入某状态可能卡顿，且依赖驱动的编译结果）。
 
 ### 2.3 运行时翻译兜底仍然默认开启
 
@@ -166,7 +167,7 @@
 | --- | --- | --- | --- |
 | 5.1 | ~~纹理格式回退导致越界读~~ **已修复** | `BytesPerPixel` 现在按真实分量数/打包类型计算；`GL_ALPHA/LUMINANCE/RED/RG/LA/RGB` 在上传前用 `ExpandToRgba` 在 CPU 展开为 RGBA8（`MetalNative.inc`），不再按 4 B/px 越界 `memcpy` | 已覆盖 8-bit 窄格式；未知格式仍走旧回退并保留告警 |
 | 5.2 | 离屏 view id 上限：每帧 0..199，超限后复用 199 | 单帧目标切换 >200 次才会触发；现在**超限时打印一次** `[cne-view] offscreen view limit ...` 警告，不再静默 | 仍可改为直连 Metal 视图/动态视图池 |
-| 5.3 | `framebuffer_renderbuffer` 只记 `renderbuffer` 字段；`renderbuffer_storage` 是空实现（不存尺寸） | mask 若用 renderbuffer 做模板附件将无法创建对应附件 | 随 3.1 一起实现（记录尺寸并创建 stencil 附件） |
+| 5.3 | ~~renderbuffer 未真正接线~~ **已修复** | `renderbuffer_storage` 记录尺寸/格式；`EnsureFramebuffer` 优先使用已绑定的 renderbuffer 作为 D24S8 深度/模板附件；resize/删除时销毁并失效相关 FBO | 颜色 renderbuffer 附件仍未支持（OpenFL 2D 不用） |
 | 5.4 | ~~`get_integerv` 只有 2 个 pname~~ **已修复** | `lime_gl_get_integerv` 改为委托 `QueryIntegersGL`（`MetalUniforms.inc` 的 pname 表，与 `get_floatv/get_booleanv` 同源） | 未知 pname 仍返回 0，但常见 GL limit/state 查询已一致 |
 | 5.5 | 未注册的死代码：`lime_gl_clear_depth`、`lime_gl_blend_barrier`；`ViewForFramebuffer/nextFramebufferView` 无运行时调用 | 无害，增加审计噪音 | 清理或注明"proto only" |
 
@@ -200,7 +201,7 @@
 | ~~AOT 失败不阻塞构建~~ **已修复** | `gen_shader_aot.py --strict` 对照 `metal/audit/aot-expected.json`（允许的 4 个 mod 失败 + 最低 metallib 覆盖率）；`--check` 不再改动工作区 | CI 已通过 `verify.sh` 使用 strict |
 | 文档/缓存数字不同步 | `README.MD` / `METAL-TODO.md` 中的 116/112 等数字是快照 | ✅ `metal/scripts/check-docs.py` 自动校验（已接入 `verify.sh` 与 GitHub Action） |
 | ~~没有一键验证入口~~ **已修复** | 各检查散落在不同脚本 | ✅ 根目录 `verify.sh`：翻译器测试 + AOT 严格审计 + 文档校验（`--no-aot` / `--with-native` 可选） |
-| ~~翻译器回归无单测~~ **已修复** | 翻译器规则此前只靠真实 shader 间接覆盖 | ✅ `TestTranslateCompat.hx`（34 项）+ `TestTranslate.hx`（40 项），`verify.sh` 自动执行 |
+| ~~翻译器回归无单测~~ **已修复** | 翻译器规则此前只靠真实 shader 间接覆盖 | ✅ `TestTranslateCompat.hx`（38 项）+ `TestTranslate.hx`（40 项），`verify.sh` 自动执行 |
 | 无自动化像素回归 | 目前全靠手工截图 + `diff.py` | 用 `metal/tools/native_replay` + 录制帧建立金帧对比（逐像素 diff），纳入脚本 |
 | 运行时渲染统计 | `CNE_METAL_STATS`（bgfx draws/submits） | 保留并文档化 |
 | 帧录制设施 | `MetalCapture.inc`（`CNE_METAL_CAPTURE_FRAME`）+ `native_replay` | 作为 1.2 的验收工具长期保留 |

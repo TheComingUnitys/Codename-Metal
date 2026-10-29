@@ -4539,6 +4539,36 @@ namespace lime {
 			return on;
 		}
 
+		/** Drops every bgfx framebuffer that uses this GL renderbuffer as its depth attachment. */
+		void InvalidateFramebuffersForRenderbuffer (int renderbufferId)
+		{
+			if (renderbufferId <= 0) return;
+
+			for (auto& fb : framebuffers)
+			{
+				if (fb.second.renderbuffer != renderbufferId) continue;
+
+				for (auto& entry : fb.second.attachmentHandles)
+				{
+					if (bgfx::isValid (entry.second)) bgfx::destroy (entry.second);
+				}
+				for (auto& entry : fb.second.attachmentDepths)
+				{
+					if (bgfx::isValid (entry.second)) bgfx::destroy (entry.second);
+				}
+				fb.second.attachmentHandles.clear ();
+				fb.second.attachmentDepths.clear ();
+				fb.second.handle = BGFX_INVALID_HANDLE;
+				fb.second.depthHandle = BGFX_INVALID_HANDLE;
+				if (FboLogEnabled ())
+				{
+					std::fprintf (stderr, "[cne-fbolog] invalidate fbo=%d renderbuffer=%d\n",
+						fb.first, renderbufferId);
+					std::fflush (stderr);
+				}
+			}
+		}
+
 		void InvalidateFramebuffersForTexture (int textureId)
 		{
 			if (textureId <= 0) return;
@@ -4607,8 +4637,32 @@ namespace lime {
 				if (fb.failedForTexture == fb.texture) return;   // known bad attachment
 
 				bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
+
+				// A GL renderbuffer attached to this framebuffer is the depth/stencil target
+				// (OpenFL uses this for masks / explicit attachments).  Create it on demand and
+				// keep it on the renderbuffer so resizes reuse the same storage.
+				if (fb.renderbuffer != 0)
+				{
+					auto rbIt = renderbuffers.find (fb.renderbuffer);
+					if (rbIt != renderbuffers.end () && rbIt->second.width > 0 && rbIt->second.height > 0)
+					{
+						RenderbufferData& rb = rbIt->second;
+						if (!bgfx::isValid (rb.handle))
+						{
+							rb.handle = bgfx::createTexture2D (
+								(uint16_t)rb.width, (uint16_t)rb.height, false, 1,
+								bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT, nullptr);
+						}
+						depth = rb.handle;
+					}
+				}
+
 				auto depthIt = fb.attachmentDepths.find (fb.texture);
-				if (depthIt != fb.attachmentDepths.end () && bgfx::isValid (depthIt->second))
+				if (bgfx::isValid (depth))
+				{
+					// renderbuffer attachment wins over the cached per-texture depth
+				}
+				else if (depthIt != fb.attachmentDepths.end () && bgfx::isValid (depthIt->second))
 				{
 					depth = depthIt->second;
 				}
@@ -6785,12 +6839,30 @@ namespace lime {
 	void lime_gl_renderbuffer_storage (int target, int internalformat, int width, int height)
 	{
 		CNE_COV ("lime_gl_renderbuffer_storage");
-		// Depth/stencil attachments are created lazily together with the framebuffer in
-		// glCheckFramebufferStatus.  Store the dimensions for that step.
 		(void)target;
-		(void)internalformat;
-		(void)width;
-		(void)height;
+
+		auto it = renderbuffers.find (MetalContext::state.currentRenderbuffer);
+		if (it == renderbuffers.end ())
+		{
+			return;
+		}
+
+		RenderbufferData& rb = it->second;
+		const bool resized = (rb.width != width || rb.height != height
+			|| rb.internalFormat != internalformat);
+
+		rb.width = width;
+		rb.height = height;
+		rb.internalFormat = internalformat;
+
+		if (resized && bgfx::isValid (rb.handle))
+		{
+			// Attached framebuffers reference this handle; drop them so EnsureFramebuffer
+			// rebuilds with the new size.
+			bgfx::destroy (rb.handle);
+			rb.handle = BGFX_INVALID_HANDLE;
+			InvalidateFramebuffersForRenderbuffer (MetalContext::state.currentRenderbuffer);
+		}
 	}
 
 	//@impl lime_gl_renderbuffer_storage_multisample
@@ -6804,7 +6876,13 @@ namespace lime {
 	void lime_gl_delete_renderbuffer (int renderbuffer)
 	{
 		CNE_COV ("lime_gl_delete_renderbuffer");
-		renderbuffers.erase (renderbuffer);
+		auto it = renderbuffers.find (renderbuffer);
+		if (it != renderbuffers.end ())
+		{
+			InvalidateFramebuffersForRenderbuffer (renderbuffer);
+			if (bgfx::isValid (it->second.handle)) bgfx::destroy (it->second.handle);
+			renderbuffers.erase (it);
+		}
 		MetalContext::Remove (renderbuffer);
 	}
 
