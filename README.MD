@@ -357,6 +357,7 @@ multi-day and **not scheduled**:
 | Haxe changes not taking effect | re-run `haxelib run lime build mac` (`apply.sh --build` only updates the C++ ndll) |
 | app quits immediately | make sure `lime.ndll` is the cpp build: `apply.sh ... --deploy` |
 | one-off stall entering a state | `CNE_METAL_PROFILE=1 CNE_METAL_HITCH=1`; usually asset creation/GC |
+| Freeplay selection flash plays as black in a shader-heavy mod (e.g. dustin) | the mod draws its white flash beneath its black transition bars when Bloom/Gameplay Shaders are on; disable Bloom in the mod options, or patch the mod's `NewFreeplayMenu.hx` so `whiteCover` is always created (back up the file first) |
 
 ---
 

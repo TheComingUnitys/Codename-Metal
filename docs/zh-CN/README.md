@@ -357,6 +357,7 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
 | 改了 Haxe 不生效 | 必须重新 `haxelib run lime build mac`；只 `apply.sh --build` 只更新 C++ ndll |
 | app 启动闪退 | 检查 `lime.ndll` 是否为 cpp 版：`apply.sh … --deploy` |
 | 进入某状态卡一下 | 用 `CNE_METAL_PROFILE=1 CNE_METAL_HITCH=1` 定位；多为资源创建/GC |
+| 某 shader 重的 mod（如 dustin）Freeplay 选歌 flash 变黑 | 该 mod 在 Bloom/Gameplay Shaders 开启时把白色 flash 画在黑色过渡 bars 下面；可在 mod 选项关闭 Bloom，或改 mod 的 `NewFreeplayMenu.hx` 让 `whiteCover` 始终创建（先备份文件） |
 
 ---
 
