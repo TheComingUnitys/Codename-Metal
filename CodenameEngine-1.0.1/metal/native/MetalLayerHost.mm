@@ -81,6 +81,35 @@ extern "C" {
 			// picture and let old sprites smear into the bars (the backbuffer is cleared now).
 			window.restorable = NO;
 
+			// Force a 16:9 window that fits the screen.  macOS clamps an oversized 1600x900
+			// window to the display width only, leaving a taller frame (e.g. 1249x825 on a
+			// scaled display) and therefore letterbox bands; requesting the size again here
+			// with the height derived from the available width keeps the content edge-to-edge.
+			{
+				NSScreen* screen = [window screen];
+				if (screen == nil) screen = [NSScreen mainScreen];
+				if (screen != nil)
+				{
+					NSRect visible = [screen visibleFrame];
+					CGFloat targetW = 1600.0;
+					CGFloat targetH = 900.0;
+					const CGFloat maxW = visible.size.width * 0.94;
+					const CGFloat maxH = visible.size.height * 0.94;
+					if (targetW > maxW)
+					{
+						targetW = maxW;
+						targetH = targetW * 9.0 / 16.0;
+					}
+					if (targetH > maxH)
+					{
+						targetH = maxH;
+						targetW = targetH * 16.0 / 9.0;
+					}
+					[window setContentSize:NSMakeSize(targetW, targetH)];
+					[window center];
+				}
+			}
+
 			NSRect bounds = [contentView bounds];
 			if (width > 0.0 && height > 0.0)
 			{
