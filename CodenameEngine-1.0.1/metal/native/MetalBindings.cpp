@@ -280,6 +280,8 @@ namespace lime {
 			std::set<int> samplesTargets;
 		};
 		static std::vector<FramePass> gFramePasses;
+		// [cne-clear] view 199 clears the whole backbuffer once per frame (letterbox bands).
+		static uint32_t gScreenClearFrame = 0xFFFFFFFFu;
 
 		// [cne-filterdump] CNE_METAL_DUMP_FILTER=<dir>: record the render-target passes of one
 		// frame (>= 3 passes only, i.e. the 3-camera-filter chain that paints black) and write
@@ -4187,6 +4189,10 @@ namespace lime {
 			static bgfx::ViewId execOrder[256];
 			size_t at = 0;
 			bool used[256] = { false };
+			// View 199 is the backbuffer clear (submitted with touch(), so it has no draw pass
+			// and would otherwise land after the screen views and clear the finished frame).
+			execOrder[at++] = 199;
+			used[199] = true;
 			for (size_t idx : order)
 			{
 				const bgfx::ViewId v = gFramePasses[idx].view;
@@ -5116,6 +5122,26 @@ namespace lime {
 				gFboIntermediate.clear ();
 
 				ResetViewAllocation ();
+
+				// Clear the whole backbuffer once per frame *before* any pass is submitted.
+				// The engine never calls glClear and bgfx only clears a view rect, which left
+				// stale sprites in letterbox bands.  View 199 sits between the offscreen range
+				// (0..198) and the screen range (201..250) and only clears, it never draws.
+				static const bool fullBufferClear = [] ()
+				{
+					const char* v = std::getenv ("CNE_METAL_FULL_BUFFER_CLEAR");
+					if (v == nullptr) return true;
+					return !(v[0] == '0' && v[1] == '\0');
+				} ();
+				if (fullBufferClear)
+				{
+					bgfx::setViewRect (199, 0, 0,
+						(uint16_t)MetalContext::state.backbufferWidth,
+						(uint16_t)MetalContext::state.backbufferHeight);
+					bgfx::setViewClear (199, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
+						0x000000ff, 1.0f, 0);
+					bgfx::touch (199);
+				}
 			}
 
 			const int target = MetalContext::state.currentFramebuffer;
@@ -5136,7 +5162,8 @@ namespace lime {
 				if (target == 0)
 				{
 					gActiveView = gNextScreenView;
-					if (gNextScreenView > 200) --gNextScreenView;
+					// Views 201..250 for the screen; 199 is the backbuffer-clear view.
+					if (gNextScreenView > 201) --gNextScreenView;
 				}
 				else
 				{
@@ -5146,13 +5173,13 @@ namespace lime {
 					// Frame recordings with more than 200 distinct (fbo, attachment) pairs are
 					// pathological, but silently reusing an id makes the failure hard to see, so
 					// say it once.
-					if (gNextFboView >= 199)
+					if (gNextFboView >= 198)
 					{
 						static bool warnedViewLimit = false;
 						if (!warnedViewLimit)
 						{
 							warnedViewLimit = true;
-							std::fprintf (stderr, "[cne-view] offscreen view limit (199/frame) reached; further targets reuse view 199\n");
+							std::fprintf (stderr, "[cne-view] offscreen view limit (198/frame) reached; further targets reuse view 198\n");
 							std::fflush (stderr);
 						}
 					}
@@ -5375,42 +5402,8 @@ namespace lime {
 
 			ClampToTarget (vx, vy, vw, vh, targetW, targetH);
 
-			if (MetalContext::state.currentFramebuffer == 0)
 			{
-				// The engine never clears the backbuffer, and bgfx only clears the view rect.
-				// A letterboxed game (window aspect != 16:9) therefore kept the previous frames'
-				// sprites in the top/bottom bands and smeared them.  Clear the *whole* backbuffer
-				// every frame and clip the actual draws to the game viewport with the view scissor.
-				bgfx::setViewClear (view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
-					0x000000ff, 1.0f, 0);
-				bgfx::setViewRect (view, 0, 0,
-					(uint16_t)MetalContext::state.backbufferWidth,
-					(uint16_t)MetalContext::state.backbufferHeight);
 
-				int sx = vx, sy = vy, sw = vw, sh = vh;
-				if (MetalContext::state.scissorEnabled)
-				{
-					const int* sc = MetalContext::state.scissor;
-					int gx = sc[0], gy = sc[1], gw = sc[2], gh = sc[3];
-					ClampToTarget (gx, gy, gw, gh, targetW, targetH);
-					const int ix = (sx > gx) ? sx : gx;
-					const int iy = (sy > gy) ? sy : gy;
-					const int ix2 = ((sx + sw) < (gx + gw)) ? (sx + sw) : (gx + gw);
-					const int iy2 = ((sy + sh) < (gy + gh)) ? (sy + sh) : (gy + gh);
-					sx = ix; sy = iy; sw = ix2 - ix; sh = iy2 - iy;
-				}
-				if (sw > 0 && sh > 0)
-				{
-					bgfx::setViewScissor (view, (uint16_t)sx, (uint16_t)(targetH - (sy + sh)),
-						(uint16_t)sw, (uint16_t)sh);
-				}
-				else
-				{
-					bgfx::setViewScissor (view, 0, 0, 1, 1);
-				}
-			}
-			else
-			{
 				bgfx::setViewRect (view, (uint16_t)vx, (uint16_t)(targetH - (vy + vh)),
 					(uint16_t)vw, (uint16_t)vh);
 

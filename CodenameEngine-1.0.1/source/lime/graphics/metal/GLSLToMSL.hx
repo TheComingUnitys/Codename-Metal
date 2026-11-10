@@ -1850,8 +1850,13 @@ class GLSLToMSL
 		finalOut = rewriteTruncatingConstructors(finalOut);
 		finalOut = rewriteScalarUniformArrayAccess(finalOut);
 		finalOut = rewriteMatrixConstructorCasts(finalOut);
-		finalOut = rewriteMatrixComponentConstructors(finalOut);
-		finalOut = rewriteOverfullVectorConstructors(finalOut);
+		#if sys
+		if (Sys.getEnv ("CNE_TRANSLATOR_OLD_CTORS") == null)
+		#end
+		{
+			finalOut = rewriteMatrixComponentConstructors(finalOut);
+			finalOut = rewriteOverfullVectorConstructors(finalOut);
+		}
 
 		sb.add(finalOut);
 		sb.add('\n');
