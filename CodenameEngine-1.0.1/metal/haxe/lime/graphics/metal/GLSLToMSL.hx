@@ -1850,6 +1850,8 @@ class GLSLToMSL
 		finalOut = rewriteTruncatingConstructors(finalOut);
 		finalOut = rewriteScalarUniformArrayAccess(finalOut);
 		finalOut = rewriteMatrixConstructorCasts(finalOut);
+		finalOut = rewriteMatrixComponentConstructors(finalOut);
+		finalOut = rewriteOverfullVectorConstructors(finalOut);
 
 		sb.add(finalOut);
 		sb.add('\n');
@@ -2104,6 +2106,184 @@ class GLSLToMSL
 			}
 		}
 		return out;
+	}
+
+	/** GLSL matrix constructors consume the flat component list, so
+	    `mat4(red, 0, green, 0, blue, 0, 0, 0, 0, 1)` (vec3 + scalar per column) is legal.
+	    MSL only accepts complete column vectors, so rebuild the argument list into
+	    `float4x4(float4(red, 0), float4(green, 0), float4(blue, 0), float4(0, 0, 0, 1))`. */
+	function rewriteMatrixComponentConstructors (code:String):String
+	{
+		var out = code;
+		for (dim in [2, 3, 4])
+		{
+			var target = 'float' + Std.string (dim) + 'x' + Std.string (dim);
+			var search = 0;
+			while (true)
+			{
+				var at = out.indexOf (target, search);
+				if (at < 0) break;
+				search = at + target.length;
+
+				// Only constructors, not identifiers such as a helper name.
+				if (at > 0 && isIdentChar (out.charAt (at - 1))) continue;
+
+				var open = at + target.length;
+				while (open < out.length && (out.charAt (open) == ' ' || out.charAt (open) == '\t')) open++;
+				if (open >= out.length || out.charAt (open) != '(') continue;
+				var close = matchingParen (out, open);
+				if (close < 0) continue;
+
+				var args = splitTopLevelStr (out.substring (open + 1, close));
+				var comps:Array<Int> = [];
+				var total = 0;
+				var allVectors = true;
+				for (arg in args)
+				{
+					var c = argComponentCount (arg);
+					comps.push (c);
+					total += c;
+					if (c != dim) allVectors = false;
+				}
+				if (total != dim * dim || allVectors) continue;
+
+				var cols:Array<String> = [];
+				var buf:Array<String> = [];
+				var bufComps = 0;
+				var straddle = false;
+				for (i in 0...args.length)
+				{
+					var arg = StringTools.trim (args[i]);
+					var c = comps[i];
+					if (bufComps + c > dim)
+					{
+						straddle = true;
+						break;
+					}
+					buf.push (arg);
+					bufComps += c;
+					if (bufComps == dim)
+					{
+						cols.push ('float' + Std.string (dim) + '(' + buf.join (', ') + ')');
+						buf = [];
+						bufComps = 0;
+					}
+				}
+				if (straddle || cols.length != dim) continue;
+
+				var replacement = 'float' + Std.string (dim) + 'x' + Std.string (dim)
+					+ '(' + cols.join (', ') + ')';
+				out = out.substring (0, at) + replacement + out.substring (close + 1);
+				search = at + replacement.length;
+			}
+		}
+		return out;
+	}
+
+	/** GLSL shaders in the wild sometimes pass a whole vec4 where the last component of a
+	    vecN constructor is expected (e.g. `vec4(r, g, b, texture2D(...))`, which the GL
+	    driver happens to accept).  Keep the code compiling by using the alpha component. */
+	function rewriteOverfullVectorConstructors (code:String):String
+	{
+		var out = code;
+		for (dim in [2, 3, 4])
+		{
+			var target = 'float' + Std.string (dim);
+			var search = 0;
+			while (true)
+			{
+				var at = out.indexOf (target, search);
+				if (at < 0) break;
+				search = at + target.length;
+				if (at > 0 && isIdentChar (out.charAt (at - 1))) continue;
+				var open = at + target.length;
+				while (open < out.length && (out.charAt (open) == ' ' || out.charAt (open) == '\t')) open++;
+				if (open >= out.length || out.charAt (open) != '(') continue;
+				var close = matchingParen (out, open);
+				if (close < 0) continue;
+
+				var args = splitTopLevelStr (out.substring (open + 1, close));
+				if (args.length < 2) continue;
+				var comps:Array<Int> = [];
+				var total = 0;
+				for (arg in args)
+				{
+					var c = argComponentCount (arg);
+					comps.push (c);
+					total += c;
+				}
+				if (total != dim + 3) continue;
+				var prefix = 0;
+				for (i in 0...args.length - 1) prefix += comps[i];
+				if (prefix != dim - 1 || comps[args.length - 1] != 4) continue;
+
+				var last = StringTools.trim (args[args.length - 1]);
+				args[args.length - 1] = '(' + last + ').a';
+				var replacement = target + '(' + args.join (', ') + ')';
+				out = out.substring (0, at) + replacement + out.substring (close + 1);
+				search = at + replacement.length;
+			}
+		}
+		return out;
+	}
+
+	function matchingParen (s:String, open:Int):Int
+	{
+		var depth = 0;
+		for (i in open...s.length)
+		{
+			var c = s.charAt (i);
+			if (c == '(') depth++;
+			else if (c == ')')
+			{
+				depth--;
+				if (depth == 0) return i;
+			}
+		}
+		return -1;
+	}
+
+	function argComponentCount (raw:String):Int
+	{
+		var arg = StringTools.trim (raw);
+		var dot = arg.lastIndexOf ('.');
+		if (dot > 0)
+		{
+			var sw = arg.substr (dot + 1);
+			if (sw.length >= 1 && sw.length <= 4 && ~/^[xyzwrgba]+$/.match (sw)) return sw.length;
+		}
+		if (localTypes.exists (arg))
+		{
+			var dim = matrixDim (localTypes.get (arg));
+			if (dim > 0) return dim * dim;
+			var vc = vectorComponents (localTypes.get (arg));
+			if (vc > 0) return vc;
+		}
+		for (n in [2, 3, 4])
+		{
+			if (StringTools.startsWith (arg, 'float' + Std.string (n) + '(')
+			||  StringTools.startsWith (arg, 'vec' + Std.string (n) + '(')) return n;
+		}
+		// Texture samples yield a vec4 when the argument is the whole call (optionally a plain
+		// swizzle).  Anything else (arithmetic, .a * .5, ...) is treated as a scalar so the
+		// overfull-constructor rewrite does not append a member to a float expression.
+		for (fn in ['flixel_texture2D', 'texture2D', 'texture'])
+		{
+			if (!StringTools.startsWith (arg, fn)) continue;
+			var po = arg.indexOf ('(');
+			if (po < 0) return 1;
+			var pc = matchingParen (arg, po);
+			if (pc < 0) return 1;
+			var rest = StringTools.trim (arg.substr (pc + 1));
+			if (rest.length == 0) return 4;
+			if (rest.length >= 2 && rest.charAt (0) == '.')
+			{
+				var sw = rest.substr (1);
+				if (~/^[xyzwrgba]{1,4}$/.match (sw)) return sw.length;
+			}
+			return 1;
+		}
+		return 1;
 	}
 
 	static function matrixDim (glslType:String):Int
