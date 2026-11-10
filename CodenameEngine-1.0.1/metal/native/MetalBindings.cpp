@@ -3996,23 +3996,22 @@ namespace lime {
 			const char* dumpDir = dumpDirBuf;
 			::mkdir (dumpDir, 0755);
 
-			for (size_t i = 0; i < gCneFilterPasses.size (); ++i)
+			auto dumpOne = [&] (size_t i, int texId, const char* kind)
 			{
-				const CneFilterPassRec& rec = gCneFilterPasses[i];
-				auto t = textures.find (rec.target);
-				if (t == textures.end ()) continue;
+				auto t = textures.find (texId);
+				if (t == textures.end ()) return;
 				const uint16_t w = (uint16_t)t->second.width;
 				const uint16_t h = (uint16_t)t->second.height;
-				if (w == 0 || h == 0 || !bgfx::isValid (t->second.handle)) continue;
+				if (w == 0 || h == 0 || !bgfx::isValid (t->second.handle)) return;
 
 				bgfx::TextureFormat::Enum fmt = t->second.bgfxFormat;
 				if (fmt == bgfx::TextureFormat::Count) fmt = bgfx::TextureFormat::RGBA8;
 
 				bgfx::TextureHandle readback = bgfx::createTexture2D (w, h, false, 1, fmt,
 					BGFX_TEXTURE_READ_BACK | BGFX_TEXTURE_BLIT_DST, nullptr);
-				if (!bgfx::isValid (readback)) continue;
+				if (!bgfx::isValid (readback)) return;
 
-				const uint16_t view = (uint16_t)(900 + i);
+				const uint16_t view = (uint16_t)(900 + i * 2 + (kind[0] == 'd' ? 1 : 0));
 				bgfx::setViewRect (view, 0, 0, w, h);
 				bgfx::setViewFrameBuffer (view, BGFX_INVALID_HANDLE);
 
@@ -4033,8 +4032,6 @@ namespace lime {
 				bgfx::frame (BGFX_FRAME_NONE);
 				bgfx::frame (BGFX_FRAME_NONE);
 
-				// Keep a downscaled 256x256 copy: enough to tell black from coloured output and
-				// small enough to auto-dump a frame every N frames during a short flash.
 				const int DW = 256, DH = 256;
 				std::vector<uint8_t> small ((size_t)DW * DH * 4);
 				for (int y = 0; y < DH; ++y)
@@ -4050,7 +4047,8 @@ namespace lime {
 				}
 
 				char base[512];
-				std::snprintf (base, sizeof (base), "%s/pass%zu-fbo%d-prog%d", dumpDir, i, rec.fbo, rec.prog);
+				std::snprintf (base, sizeof (base), "%s/p%zu-%s%d-fbo%d-prog%d", dumpDir, i, kind, texId,
+					gCneFilterPasses[i].fbo, gCneFilterPasses[i].prog);
 				char path[600];
 				std::snprintf (path, sizeof (path), "%s.raw", base);
 				if (FILE* f = std::fopen (path, "wb"))
@@ -4063,11 +4061,18 @@ namespace lime {
 				{
 					std::fprintf (f, "size %d %d\npitch %d\nformat %u\norig %u %u\nfbo %d\ntarget %d\nsampled %d\nprog %d\n",
 						DW, DH, DW * 4, (unsigned)fmt, (unsigned)w, (unsigned)h,
-						rec.fbo, rec.target, rec.sampled, rec.prog);
+						gCneFilterPasses[i].fbo, gCneFilterPasses[i].target,
+						gCneFilterPasses[i].sampled, gCneFilterPasses[i].prog);
 					std::fclose (f);
 				}
 
 				bgfx::destroy (readback);
+			};
+
+			for (size_t i = 0; i < gCneFilterPasses.size (); ++i)
+			{
+				dumpOne (i, gCneFilterPasses[i].sampled, "src");
+				dumpOne (i, gCneFilterPasses[i].target, "dst");
 			}
 
 			std::fprintf (stderr, "[cne-filterdump] wrote %zu passes to %s\n",
