@@ -34,6 +34,8 @@ namespace metal {
 	// CNE diagnostics: GL draw entry points hit, and draws that reached bgfx.
 	// Orders the frame's views by render-target dependency (see MetalBindings.cpp).
 	void ApplyFrameViewOrder ();
+	// [cne-filterdump] CNE_METAL_DUMP_FILTER=<dir>: writes one frame's RT passes after present.
+	void DumpFilterPassesAfterFrame ();
 
 	extern uint32_t gDrawArrays;
 	// [cne-hitch] resource-creation counters (see Frame())

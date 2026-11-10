@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <csignal>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -279,6 +280,16 @@ namespace lime {
 			std::set<int> samplesTargets;
 		};
 		static std::vector<FramePass> gFramePasses;
+
+		// [cne-filterdump] CNE_METAL_DUMP_FILTER=<dir>: record the render-target passes of one
+		// frame (>= 3 passes only, i.e. the 3-camera-filter chain that paints black) and write
+		// each pass target after present so the pass that produces black can be seen directly.
+		struct CneFilterPassRec { int fbo; int target; int sampled; int prog; };
+		static std::vector<CneFilterPassRec> gCneFilterPasses;
+		// SIGUSR1 asks for a dump of the next frame's filter chain: the user sends it exactly
+		// while the black flash is on screen, so the dump captures that frame instead of startup.
+		static volatile std::sig_atomic_t gCneFilterDumpRequested = 0;
+		static void CneFilterDumpSignal (int) { gCneFilterDumpRequested = 1; }
 
 		// [cne-rtdebug] first render target created = the world pass output
 		static int gFirstRtTexture = -1;
@@ -3945,6 +3956,126 @@ namespace lime {
 			}
 		}
 
+		// [cne-filterdump] after-present hook (called from MetalContext::Frame).
+		void CneDumpFilterPassesImpl ()
+		{
+			static bool signalInstalled = false;
+			if (!signalInstalled)
+			{
+				signalInstalled = true;
+				std::signal (SIGUSR1, CneFilterDumpSignal);
+			}
+
+			// Trigger 1: SIGUSR1 (dump the next frame).  Trigger 2: CNE_METAL_DUMP_FILTER_EVERY=N
+			// auto-dumps every N frames (downscaled), so a short "hold the black flash" run is
+			// enough even when the signal cannot be delivered to the background process.
+			static const int dumpEvery = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL_DUMP_FILTER_EVERY");
+				return (v != nullptr && v[0] != '\0') ? std::atoi (v) : 0;
+			} ();
+			static int autoDumps = 0;
+
+			const bool signalled = gCneFilterDumpRequested != 0;
+			const bool autoDue = dumpEvery > 0 && !gCneFilterPasses.empty ()
+				&& (metal::gFrameIndex % (uint32_t)dumpEvery) == 0 && autoDumps < 40;
+			if (!signalled && !autoDue) return;
+			gCneFilterDumpRequested = 0;
+			if (gCneFilterPasses.empty ()) return;
+			if (autoDue) ++autoDumps;
+
+			const char* envDir = std::getenv ("CNE_METAL_DUMP_FILTER");
+			const char* baseDir = (envDir != nullptr && envDir[0] != '\0') ? envDir : "/tmp/cne-filter-dump";
+			::mkdir (baseDir, 0755);
+
+			static int dumpIndex = 0;
+			++dumpIndex;
+			char dumpDirBuf[512];
+			std::snprintf (dumpDirBuf, sizeof (dumpDirBuf), "%s/dump%d-f%u", baseDir, dumpIndex,
+				(unsigned)metal::gFrameIndex);
+			const char* dumpDir = dumpDirBuf;
+			::mkdir (dumpDir, 0755);
+
+			for (size_t i = 0; i < gCneFilterPasses.size (); ++i)
+			{
+				const CneFilterPassRec& rec = gCneFilterPasses[i];
+				auto t = textures.find (rec.target);
+				if (t == textures.end ()) continue;
+				const uint16_t w = (uint16_t)t->second.width;
+				const uint16_t h = (uint16_t)t->second.height;
+				if (w == 0 || h == 0 || !bgfx::isValid (t->second.handle)) continue;
+
+				bgfx::TextureFormat::Enum fmt = t->second.bgfxFormat;
+				if (fmt == bgfx::TextureFormat::Count) fmt = bgfx::TextureFormat::RGBA8;
+
+				bgfx::TextureHandle readback = bgfx::createTexture2D (w, h, false, 1, fmt,
+					BGFX_TEXTURE_READ_BACK | BGFX_TEXTURE_BLIT_DST, nullptr);
+				if (!bgfx::isValid (readback)) continue;
+
+				const uint16_t view = (uint16_t)(900 + i);
+				bgfx::setViewRect (view, 0, 0, w, h);
+				bgfx::setViewFrameBuffer (view, BGFX_INVALID_HANDLE);
+
+				bgfx::TextureRegion dstRegion;
+				dstRegion.handle = readback;
+				dstRegion.width = w;
+				dstRegion.height = h;
+
+				bgfx::TextureRegion srcRegion;
+				srcRegion.handle = t->second.handle;
+				srcRegion.width = w;
+				srcRegion.height = h;
+
+				bgfx::blit (view, dstRegion, srcRegion);
+
+				std::vector<uint8_t> pixels ((size_t)w * h * 4);
+				bgfx::read (dstRegion, pixels.data ());
+				bgfx::frame (BGFX_FRAME_NONE);
+				bgfx::frame (BGFX_FRAME_NONE);
+
+				// Keep a downscaled 256x256 copy: enough to tell black from coloured output and
+				// small enough to auto-dump a frame every N frames during a short flash.
+				const int DW = 256, DH = 256;
+				std::vector<uint8_t> small ((size_t)DW * DH * 4);
+				for (int y = 0; y < DH; ++y)
+				{
+					const int sy = y * h / DH;
+					for (int x = 0; x < DW; ++x)
+					{
+						const int sx = x * w / DW;
+						const size_t si = ((size_t)sy * w + sx) * 4;
+						const size_t di = ((size_t)y * DW + x) * 4;
+						std::memcpy (&small[di], &pixels[si], 4);
+					}
+				}
+
+				char base[512];
+				std::snprintf (base, sizeof (base), "%s/pass%zu-fbo%d-prog%d", dumpDir, i, rec.fbo, rec.prog);
+				char path[600];
+				std::snprintf (path, sizeof (path), "%s.raw", base);
+				if (FILE* f = std::fopen (path, "wb"))
+				{
+					std::fwrite (small.data (), 1, small.size (), f);
+					std::fclose (f);
+				}
+				std::snprintf (path, sizeof (path), "%s.txt", base);
+				if (FILE* f = std::fopen (path, "w"))
+				{
+					std::fprintf (f, "size %d %d\npitch %d\nformat %u\norig %u %u\nfbo %d\ntarget %d\nsampled %d\nprog %d\n",
+						DW, DH, DW * 4, (unsigned)fmt, (unsigned)w, (unsigned)h,
+						rec.fbo, rec.target, rec.sampled, rec.prog);
+					std::fclose (f);
+				}
+
+				bgfx::destroy (readback);
+			}
+
+			std::fprintf (stderr, "[cne-filterdump] wrote %zu passes to %s\n",
+				gCneFilterPasses.size (), dumpDir);
+			gCneFilterPasses.clear ();
+			std::fflush (stderr);
+		}
+
 		void ApplyFrameViewOrderImpl ()
 		{
 			ReadBackTick ();
@@ -6089,6 +6220,41 @@ namespace lime {
 				}
 			}
 
+			// [cne-filterdump] CNE_METAL_DUMP_FILTER=<dir>: record the RT-sampling passes of
+			// the current frame (framebuffer target + sampled render target).  The after-frame
+			// hook writes each target once a frame with at least 3 passes is seen.
+			{
+				static uint32_t dumpFrame = 0xFFFFFFFFu;
+				{
+					if (dumpFrame != metal::gFrameIndex)
+					{
+						dumpFrame = metal::gFrameIndex;
+						gCneFilterPasses.clear ();
+					}
+					if (gCneFilterPasses.size () < 12)
+					{
+						int sampled = -1;
+						for (auto& binding : MetalContext::boundTextures)
+						{
+							auto bt = textures.find (binding.second);
+							if (bt != textures.end () && bt->second.isRenderTarget)
+							{
+								sampled = binding.second;
+								break;
+							}
+						}
+						int target = -1;
+						auto fbi = framebuffers.find (MetalContext::state.currentFramebuffer);
+						if (fbi != framebuffers.end ()) target = fbi->second.texture;
+						if (sampled > 0 && target > 0)
+						{
+							gCneFilterPasses.push_back ({MetalContext::state.currentFramebuffer, target, sampled,
+								MetalContext::state.currentProgram});
+						}
+					}
+				}
+			}
+
 			// [cne-skipdraw] CNE_METAL_SKIP_DRAW=<n>[,<n>...]: skip the nth draw of this frame.
 			// Lets a suspect draw be isolated by bisection when one pass paints over another.
 			{
@@ -7519,6 +7685,11 @@ namespace lime {
 		void ApplyFrameViewOrder ()
 		{
 			ApplyFrameViewOrderImpl ();
+		}
+
+		void DumpFilterPassesAfterFrame ()
+		{
+			CneDumpFilterPassesImpl ();
 		}
 	}
 

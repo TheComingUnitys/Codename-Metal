@@ -1187,6 +1187,7 @@ namespace metal {
 		if (captureScreen) bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels-cache");
 
 		bgfx::frame ();
+		metal::DumpFilterPassesAfterFrame ();
 		const double presentMs = SinceProcessStartMs () - submitStartMs - submitMs;
 
 		// Store a requested backbuffer copy for the next glReadPixels() call.  When a raw
