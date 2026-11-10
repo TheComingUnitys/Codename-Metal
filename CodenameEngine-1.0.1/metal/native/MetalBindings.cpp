@@ -5374,20 +5374,58 @@ namespace lime {
 			const int targetH = h;
 
 			ClampToTarget (vx, vy, vw, vh, targetW, targetH);
-			bgfx::setViewRect (view, (uint16_t)vx, (uint16_t)(targetH - (vy + vh)),
-				(uint16_t)vw, (uint16_t)vh);
 
-			if (MetalContext::state.scissorEnabled)
+			if (MetalContext::state.currentFramebuffer == 0)
 			{
-				const int* sc = MetalContext::state.scissor;
-				int sx = sc[0], sy = sc[1], sw = sc[2], sh = sc[3];
-				ClampToTarget (sx, sy, sw, sh, targetW, targetH);
-				bgfx::setViewScissor (view, (uint16_t)sx, (uint16_t)(targetH - (sy + sh)),
-					(uint16_t)sw, (uint16_t)sh);
+				// The engine never clears the backbuffer, and bgfx only clears the view rect.
+				// A letterboxed game (window aspect != 16:9) therefore kept the previous frames'
+				// sprites in the top/bottom bands and smeared them.  Clear the *whole* backbuffer
+				// every frame and clip the actual draws to the game viewport with the view scissor.
+				bgfx::setViewClear (view, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL,
+					0x000000ff, 1.0f, 0);
+				bgfx::setViewRect (view, 0, 0,
+					(uint16_t)MetalContext::state.backbufferWidth,
+					(uint16_t)MetalContext::state.backbufferHeight);
+
+				int sx = vx, sy = vy, sw = vw, sh = vh;
+				if (MetalContext::state.scissorEnabled)
+				{
+					const int* sc = MetalContext::state.scissor;
+					int gx = sc[0], gy = sc[1], gw = sc[2], gh = sc[3];
+					ClampToTarget (gx, gy, gw, gh, targetW, targetH);
+					const int ix = (sx > gx) ? sx : gx;
+					const int iy = (sy > gy) ? sy : gy;
+					const int ix2 = ((sx + sw) < (gx + gw)) ? (sx + sw) : (gx + gw);
+					const int iy2 = ((sy + sh) < (gy + gh)) ? (sy + sh) : (gy + gh);
+					sx = ix; sy = iy; sw = ix2 - ix; sh = iy2 - iy;
+				}
+				if (sw > 0 && sh > 0)
+				{
+					bgfx::setViewScissor (view, (uint16_t)sx, (uint16_t)(targetH - (sy + sh)),
+						(uint16_t)sw, (uint16_t)sh);
+				}
+				else
+				{
+					bgfx::setViewScissor (view, 0, 0, 1, 1);
+				}
 			}
 			else
 			{
-				bgfx::setViewScissor (view, 0, 0, 0, 0);
+				bgfx::setViewRect (view, (uint16_t)vx, (uint16_t)(targetH - (vy + vh)),
+					(uint16_t)vw, (uint16_t)vh);
+
+				if (MetalContext::state.scissorEnabled)
+				{
+					const int* sc = MetalContext::state.scissor;
+					int sx = sc[0], sy = sc[1], sw = sc[2], sh = sc[3];
+					ClampToTarget (sx, sy, sw, sh, targetW, targetH);
+					bgfx::setViewScissor (view, (uint16_t)sx, (uint16_t)(targetH - (sy + sh)),
+						(uint16_t)sw, (uint16_t)sh);
+				}
+				else
+				{
+					bgfx::setViewScissor (view, 0, 0, 0, 0);
+				}
 			}
 
 			// [cne-resize] Post-restore view map: view id, render target and the final view rect

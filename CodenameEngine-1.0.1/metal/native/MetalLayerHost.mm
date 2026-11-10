@@ -76,6 +76,11 @@ extern "C" {
 			// UPDATE/RENDER while AppKit tracks the menu (see MetalLayerHost.mm).
 			window.collectionBehavior = window.collectionBehavior | NSWindowCollectionBehaviorFullScreenDisallowsTiling;
 
+			// Do not restore the previous window frame on the next launch: macOS window
+			// restoration kept reopening the game at a non-16:9 size, which letterboxed the
+			// picture and let old sprites smear into the bars (the backbuffer is cleared now).
+			window.restorable = NO;
+
 			NSRect bounds = [contentView bounds];
 			if (width > 0.0 && height > 0.0)
 			{

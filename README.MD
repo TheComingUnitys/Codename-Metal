@@ -307,6 +307,11 @@ Expected output: `OK - Metal backend compiles against bgfx API v167 and Lime`.
    ping-pong semantics; re-uploading a texture invalidates the dependent FBOs.
 6. **Performance**: O(1) vertex/index buffer caching keyed by revision; same-size texture
    re-uploads use `updateTexture2D`; hot-path containers are reused.
+7. **Window size & letterboxing**: the default window is 1600x900 (16:9) and macOS window-frame
+   restoration is disabled, so every launch starts at that size. The engine never calls
+   `glClear` and bgfx clears only the view rect, so the backend now clears the **whole**
+   backbuffer each frame and clips the game draws with a view scissor; a non-16:9 window
+   would otherwise leave the previous frames' sprites smearing in the letterbox bands.
 
 ---
 

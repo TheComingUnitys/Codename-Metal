@@ -313,6 +313,10 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
    纹理重传时自动失效关联 FBO。
 6. **性能**：索引/顶点缓冲使用 revision 键做 O(1) 缓存；纹理同尺寸重传走 `updateTexture2D` 原地更新；
    热路径容器复用。
+7. **窗口大小与黑边**：默认窗口为 1600x900（16:9），并关闭 macOS 的窗口 frame 恢复，保证每次启动
+   都是该尺寸。引擎本身不调用 `glClear`，而 bgfx 只清除 view rect，因此后端现在每帧清除**整个**
+   backbuffer，并用 view scissor 把实际绘制裁到游戏视口；否则窗口不是 16:9 时，上下黑边里会残留
+   前几帧的 sprite（拖影）。
 
 ---
 
