@@ -730,7 +730,7 @@
 		const uint32_t firstIndex = (uint32_t)(byteOffset / (int)elementSize);
 		const uint16_t flags = isShort ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
 
-		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		cne_capture::SetIndexBytes (buffer->second.bytes.empty () ? nullptr : buffer->second.bytes.data (),
@@ -740,7 +740,7 @@
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
 
 		BindVertexStreams (&it->second);
-		SubmitDraw (0, indexHandle, (uint32_t)count, true, 1);
+		SubmitDraw (0, BGFX_INVALID_HANDLE, (uint32_t)count, true, 1);
 	}
 
 	//@impl cne_metal_draw_arrays

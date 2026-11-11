@@ -268,6 +268,11 @@ namespace lime {
 			uint32_t revision = 0;
 			int target = 0;
 			int usage = 0;
+			// [cne-fastpath] whole-buffer max(index)+1 cache for drawElements (firstIndex==0,
+			// full range draws are the common case in OpenFL's batched renderer).
+			uint32_t maxIndexPlusOne = 0;
+			uint32_t maxIndexRevision = 0xFFFFFFFFu;
+			uint32_t maxIndexElementSize = 0;
 		};
 
 		bool SamplerLogEnabled ();
@@ -627,6 +632,12 @@ namespace lime {
 			if (gBoundTexIds[unit] == textureId) return;
 			gBoundTexIds[unit] = textureId;
 			++gBoundTexVersion;
+		}
+		inline int FastBoundTextureId (int unit)
+		{
+			if (unit >= 0 && unit < 32) return gBoundTexIds[unit];
+			auto it = MetalContext::boundTextures.find (unit);
+			return (it == MetalContext::boundTextures.end ()) ? 0 : it->second;
 		}
 		inline bool IsTextureBound (int textureId)
 		{
@@ -1039,19 +1050,16 @@ namespace lime {
 		{
 			if (target != GL_TEXTURE_2D) return nullptr;
 			int unit = MetalContext::state.activeTextureUnit;
-			auto bound = MetalContext::boundTextures.find (unit);
-			if (bound == MetalContext::boundTextures.end ()) return nullptr;
-			auto it = textures.find (bound->second);
+			const int boundId = FastBoundTextureId (unit);
+			if (boundId == 0) return nullptr;
+			auto it = textures.find (boundId);
 			return (it == textures.end ()) ? nullptr : &it->second;
 		}
 
 		/** GL object id of the texture bound to the active unit (0 when none). */
 		int CurrentTextureId ()
 		{
-			const int unit = MetalContext::state.activeTextureUnit;
-			auto bound = MetalContext::boundTextures.find (unit);
-			if (bound == MetalContext::boundTextures.end ()) return 0;
-			return bound->second;
+			return FastBoundTextureId (MetalContext::state.activeTextureUnit);
 		}
 
 		/** Translates a GL texture format/type pair into a bgfx texture format. */
@@ -1541,6 +1549,7 @@ namespace lime {
 			bgfx::DynamicVertexBufferHandle dynamic = BGFX_INVALID_HANDLE;
 			uint64_t signature = 0;
 			uint32_t size = 0;
+			uint32_t revision = 0xFFFFFFFFu;
 		};
 
 		std::map<uint32_t, VertexBufferSlot> vertexBufferSlots;
@@ -1548,8 +1557,10 @@ namespace lime {
 		/** Same idea as the vertex cache: an index buffer per draw leaks handles. */
 		struct IndexBufferSlot
 		{
-			bgfx::IndexBufferHandle handle = BGFX_INVALID_HANDLE;
+			bgfx::DynamicIndexBufferHandle dynamic = BGFX_INVALID_HANDLE;
 			uint64_t signature = 0;
+			uint32_t size = 0;
+			uint32_t revision = 0xFFFFFFFFu;
 		};
 
 		std::map<uint32_t, IndexBufferSlot> indexBufferSlots;
@@ -1609,15 +1620,12 @@ namespace lime {
 			float value[4];
 		};
 
-		bgfx::IndexBufferHandle CachedIndexBuffer (uint32_t bufferId,
+		bgfx::DynamicIndexBufferHandle CachedIndexBuffer (uint32_t bufferId,
 			const std::vector<uint8_t>& bytes, uint32_t revision, uint16_t flags)
 		{
 			IndexBufferSlot& slot = indexBufferSlots[bufferId];
 
-			// The payload can only change through glBufferData/glBufferSubData, so the
-			// upload revision (plus size and index format) identifies it.  Hashing every
-			// index byte on every draw was the single largest front-end cost measured
-			// (CNE_METAL_PROFILE=1: hundreds of microseconds per frame in the menus).
+			// Layout key = format + size; the revision separately drives in-place updates.
 			uint64_t h = 1469598103934665603ull;
 			auto mix = [&h] (const void* p, size_t n)
 			{
@@ -1625,19 +1633,26 @@ namespace lime {
 				for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
 			};
 			mix (&flags, sizeof (flags));
-			const size_t byteSize = bytes.size ();
+			const uint32_t byteSize = (uint32_t)bytes.size ();
 			mix (&byteSize, sizeof (byteSize));
-			mix (&revision, sizeof (revision));
 
-			if (slot.handle.idx == bgfx::kInvalidHandle || slot.signature != h)
+			if (slot.dynamic.idx == bgfx::kInvalidHandle || slot.signature != h || slot.size != byteSize)
 			{
-				if (slot.handle.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.handle);
-				slot.handle = bgfx::createIndexBuffer (
-					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), (uint32_t)bytes.size ()), flags);
+				if (slot.dynamic.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.dynamic);
+				slot.dynamic = bgfx::createDynamicIndexBuffer (
+					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize), flags);
 				slot.signature = h;
+				slot.size = byteSize;
+				slot.revision = revision;
+			}
+			else if (slot.revision != revision)
+			{
+				bgfx::update (slot.dynamic, 0,
+					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize));
+				slot.revision = revision;
 			}
 
-			return slot.handle;
+			return slot.dynamic;
 		}
 
 		/**
@@ -2357,33 +2372,57 @@ namespace lime {
 				uint32_t rewriteSalt = 0;
 				if (streamBytes == &interleavedFlip) rewriteSalt |= 1u;
 				if (streamBytes == &deinterleaved) rewriteSalt |= 2u;
-				const uint64_t signature = VertexBufferSignature (
-					streamStride, dbgDesc, bytes.size (), bufferRevision, rewriteSalt);
-
-				if (slot.handle.idx == bgfx::kInvalidHandle
-				||  slot.signature != signature
-				||  slot.size != (uint32_t)bytes.size ())
+				// [cne-fastpath] The layout is baked into a dynamic buffer at creation; hash all
+				// layout fields (not just stride/size) so a changed attribute layout recreates it.
+				uint64_t layoutHash = 1469598103934665603ull;
+				auto mixLayout = [&layoutHash] (const void* p, size_t n)
 				{
-					if (slot.handle.idx != bgfx::kInvalidHandle)
-					{
-						bgfx::destroy (slot.handle);
-					}
+					const uint8_t* b = (const uint8_t*)p;
+					for (size_t i = 0; i < n; ++i) { layoutHash ^= b[i]; layoutHash *= 1099511628211ull; }
+				};
+				mixLayout (&streamStride, sizeof (streamStride));
+				mixLayout (&rewriteSalt, sizeof (rewriteSalt));
+				const uint32_t byteSize = (uint32_t)bytes.size ();
+				mixLayout (&byteSize, sizeof (byteSize));
+				for (int a = 0; a < (int)bgfx::Attrib::Count; ++a)
+				{
+					if (!layout.has ((bgfx::Attrib::Enum)a)) continue;
+					uint8_t num = 0; bgfx::AttribType::Enum type = bgfx::AttribType::Float;
+					bool normalized = false, asInt = false;
+					layout.decode ((bgfx::Attrib::Enum)a, num, type, normalized, asInt);
+					mixLayout (&a, sizeof (a)); mixLayout (&num, sizeof (num));
+					const int t = (int)type; mixLayout (&t, sizeof (t));
+					mixLayout (&normalized, sizeof (normalized)); mixLayout (&asInt, sizeof (asInt));
+					const int off = (int)layout.getOffset ((bgfx::Attrib::Enum)a);
+					mixLayout (&off, sizeof (off));
+				}
 
-					slot.handle = bgfx::createVertexBuffer (
-						bgfx::copy (bytes.empty () ? nullptr : bytes.data (), (uint32_t)bytes.size ()),
-						layout);
-					slot.signature = signature;
-					slot.size = (uint32_t)bytes.size ();
+				if (slot.dynamic.idx == bgfx::kInvalidHandle
+				||  slot.signature != layoutHash
+				||  slot.size != byteSize)
+				{
+					if (slot.dynamic.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.dynamic);
+					slot.dynamic = bgfx::createDynamicVertexBuffer (
+						bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize), layout);
+					slot.signature = layoutHash;
+					slot.size = byteSize;
+					slot.revision = bufferRevision;
 
 					if (DebugEnabled ())
 					{
 						std::fprintf (stderr, "[cne-dbg] vb cache MISS buffer=%d size=%u stride=%u handle=%u\n",
 							(int)entry.first, (unsigned)bytes.size (),
-							(unsigned)layout.getStride (), (unsigned)slot.handle.idx);
+							(unsigned)layout.getStride (), (unsigned)slot.dynamic.idx);
 					}
 				}
+				else if (slot.revision != bufferRevision)
+				{
+					bgfx::update (slot.dynamic, 0,
+						bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize));
+					slot.revision = bufferRevision;
+				}
 
-				if (slot.handle.idx != bgfx::kInvalidHandle)
+				if (slot.dynamic.idx != bgfx::kInvalidHandle)
 				{
 					// `streamStartVertex` already encodes the group's base offset (it is
 					// `baseOffset / stride` for interleaved groups and 0 for the
@@ -2391,7 +2430,7 @@ namespace lime {
 					cne_capture::AddStream ((int)stream, layout,
 						streamBytes->empty () ? nullptr : streamBytes->data (), streamBytes->size (),
 						streamStartVertex);
-					bgfx::setVertexBuffer ((uint8_t)stream, slot.handle, streamStartVertex, UINT32_MAX);
+					bgfx::setVertexBuffer ((uint8_t)stream, slot.dynamic, streamStartVertex, UINT32_MAX);
 				}
 
 				++stream;
@@ -3417,18 +3456,18 @@ namespace lime {
 
 				if (uniform.isSampler)
 				{
-					auto bound = MetalContext::boundTextures.find (uniform.textureUnit);
-					if (bound == MetalContext::boundTextures.end ())
+					const int boundTexId = FastBoundTextureId (uniform.textureUnit);
+					if (boundTexId == 0)
 					{
 						ReportSamplerSkip (uniform.textureUnit, -1, "no-bound-texture");
 						program->samplerKeys[i] = 0;
 						continue;
 					}
 
-					auto texture = textures.find (bound->second);
+					auto texture = textures.find (boundTexId);
 					if (texture == textures.end () || !bgfx::isValid (texture->second.handle))
 					{
-						ReportSamplerSkip (uniform.textureUnit, bound->second,
+						ReportSamplerSkip (uniform.textureUnit, boundTexId,
 							texture == textures.end () ? "unknown-texture" : "invalid-handle");
 						program->samplerKeys[i] = 0;
 						continue;
@@ -3443,7 +3482,7 @@ namespace lime {
 					if (SamplerLogEnabled ())
 					{
 						std::fprintf (stderr, "[cne-sampler] prog=%d unit=%d tex=%d handle=%u %dx%d\n",
-							MetalContext::state.currentProgram, uniform.textureUnit, bound->second,
+							MetalContext::state.currentProgram, uniform.textureUnit, boundTexId,
 							(unsigned)texture->second.handle.idx,
 							texture->second.width, texture->second.height);
 						std::fflush (stderr);
@@ -7020,6 +7059,24 @@ namespace lime {
 		return maxIndex + 1;
 	}
 
+	// [cne-fastpath] Whole-buffer max(index)+1 is cached per buffer revision: OpenFL's
+	// drawElements usually consumes the whole index buffer, and scanning it per draw was
+	// O(indices) on the CPU.  Partial ranges still take the direct path.
+	uint32_t MaxIndexPlusOneCached (BufferData& buffer, uint32_t elementSize, uint32_t firstIndex, int count)
+	{
+		if (firstIndex == 0 && count > 0
+		&&  (size_t)count * elementSize == buffer.bytes.size ())
+		{
+			if (buffer.maxIndexRevision == buffer.revision && buffer.maxIndexElementSize == elementSize)
+				return buffer.maxIndexPlusOne;
+			buffer.maxIndexPlusOne = MaxIndexPlusOne (buffer.bytes, elementSize, firstIndex, count);
+			buffer.maxIndexRevision = buffer.revision;
+			buffer.maxIndexElementSize = elementSize;
+			return buffer.maxIndexPlusOne;
+		}
+		return MaxIndexPlusOne (buffer.bytes, elementSize, firstIndex, count);
+	}
+
 	//@impl lime_gl_draw_elements
 	void lime_gl_draw_elements (int mode, int count, int type, double offset)
 	{
@@ -7045,7 +7102,7 @@ namespace lime {
 
 		uint16_t flags = (type == GL_UNSIGNED_SHORT) ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
 
-		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		cne_capture::SetIndexBytes (buffer->second.bytes.empty () ? nullptr : buffer->second.bytes.data (),
@@ -7054,8 +7111,8 @@ namespace lime {
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
 
 		BindVertexStreams (&it->second);
-		SubmitDraw (MaxIndexPlusOne (buffer->second.bytes, elementSize, firstIndex, count),
-			indexHandle, (uint32_t)count, true, 1);
+		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
+			BGFX_INVALID_HANDLE, (uint32_t)count, true, 1);
 
 	}
 
@@ -7097,7 +7154,7 @@ namespace lime {
 		if (buffer == buffers.end ()) return;
 
 		uint16_t flags = (type == GL_UNSIGNED_SHORT) ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
-		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		const uint32_t elementSize = (type == GL_UNSIGNED_SHORT) ? 2u : 4u;
@@ -7105,8 +7162,8 @@ namespace lime {
 
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
 		BindVertexStreams (&it->second);
-		SubmitDraw (MaxIndexPlusOne (buffer->second.bytes, elementSize, firstIndex, count),
-			indexHandle, (uint32_t)count, true, (uint32_t)instanceCount);
+		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
+			BGFX_INVALID_HANDLE, (uint32_t)count, true, (uint32_t)instanceCount);
 
 	}
 
@@ -7139,7 +7196,11 @@ namespace lime {
 	{
 		CNE_COV ("lime_gl_bind_texture");
 		if (target != GL_TEXTURE_2D) return;
-		if (texture == 0) MetalContext::boundTextures.erase (MetalContext::state.activeTextureUnit);
+		if (texture == 0)
+		{
+			MetalContext::boundTextures.erase (MetalContext::state.activeTextureUnit);
+			NoteBoundTexture (MetalContext::state.activeTextureUnit, 0);
+		}
 		else
 		{
 			MetalContext::boundTextures[MetalContext::state.activeTextureUnit] = texture;
