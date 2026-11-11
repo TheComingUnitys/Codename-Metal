@@ -738,6 +738,12 @@
 			firstIndex, (uint32_t)count);
 
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
+		gPendingIndexed = true;
+		gPendingIndex = indexHandle;
+		gPendingFirst = firstIndex;
+		gPendingCount = (uint32_t)count;
+		gPendingIndexRevision = buffer->second.revision;
+		gPendingInstances = 1;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw (0, BGFX_INVALID_HANDLE, (uint32_t)count, true, 1);
@@ -758,6 +764,8 @@
 		}
 
 		cne_capture::SetArrays ((uint32_t)count);
+		gPendingIndexed = false;
+		gPendingInstances = 1;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, 1);

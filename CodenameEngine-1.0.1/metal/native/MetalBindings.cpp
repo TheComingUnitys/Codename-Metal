@@ -1680,10 +1680,176 @@ namespace lime {
 			return h;
 		}
 
+		// [cne-merge] D38: one open indexed draw is kept pending; the next draw merges into it
+		// when everything except the index range is identical.  Flush happens when the state
+		// would change, or at the end of the frame (before ApplyFrameViewOrder).
+		struct MergeKey
+		{
+			bool valid = false;
+			bool indexed = false;
+			uint32_t instances = 1;
+			int program = 0;
+			int fbo = 0;
+			uint64_t state = 0;
+			int attachment = 0;
+			int indexHandle = 0;
+			uint32_t indexFirst = 0;
+			uint32_t indexCount = 0;
+			uint32_t indexRevision = 0;
+			uint64_t vertexSig = 0;
+			uint64_t texHash = 0;
+			uint64_t uniformHash = 0;
+		};
+
+		static const bool gMergeDrawsEnabled = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_MERGE_DRAWS");
+			if (v == nullptr) return true;
+			return !(v[0] == '0' && v[1] == '\0');
+		} ();
+		static MergeKey gCurrentMergeKey;
+		static MergeKey gOpenMergeKey;
+		static bool gMergeThisDraw = false;
+		static struct OpenDraw
+		{
+			bool valid = false;
+			bgfx::ProgramHandle program = bgfx::ProgramHandle ();
+			uint16_t view = 0;
+			bgfx::DynamicIndexBufferHandle index = bgfx::DynamicIndexBufferHandle ();
+			uint32_t first = 0;
+			uint32_t count = 0;
+			uint64_t state = 0;
+		} gOpenDraw;
+
+		// Index range of the draw being prepared, set by the lime_gl/cne_metal draw entry
+		// points before BindVertexStreams (the bgfx index buffer is bound there).
+		static bool gPendingIndexed = false;
+		static bgfx::DynamicIndexBufferHandle gPendingIndex = bgfx::DynamicIndexBufferHandle ();
+		static uint32_t gPendingFirst = 0;
+		static uint32_t gPendingCount = 0;
+		static uint32_t gPendingIndexRevision = 0;
+		static uint32_t gPendingInstances = 1;
+
+		static uint64_t MergeHashBytes (uint64_t h, const void* p, size_t n)
+		{
+			const uint8_t* b = (const uint8_t*)p;
+			for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+			return h;
+		}
+
+		static uint64_t VertexBindSignature (const VertexArrayData* vao)
+		{
+			if (vao == nullptr) return 0;
+			uint64_t h = 1469598103934665603ull;
+			for (auto& a : vao->attribs)
+			{
+				if (!a.second.enabled) continue;
+				h = MergeHashBytes (h, &a.first, sizeof (a.first));
+				h = MergeHashBytes (h, &a.second.size, sizeof (a.second.size));
+				h = MergeHashBytes (h, &a.second.type, sizeof (a.second.type));
+				h = MergeHashBytes (h, &a.second.normalized, sizeof (a.second.normalized));
+				h = MergeHashBytes (h, &a.second.stride, sizeof (a.second.stride));
+				h = MergeHashBytes (h, &a.second.offset, sizeof (a.second.offset));
+				h = MergeHashBytes (h, &a.second.buffer, sizeof (a.second.buffer));
+				auto b = buffers.find (a.second.buffer);
+				const uint32_t rev = (b != buffers.end ()) ? b->second.revision : 0xFFFFFFFFu;
+				h = MergeHashBytes (h, &rev, sizeof (rev));
+			}
+			return h;
+		}
+
+		static uint64_t UniformValueHash (ProgramData* program)
+		{
+			if (program == nullptr) return 0;
+			uint64_t h = 1469598103934665603ull;
+			for (auto& u : program->uniforms)
+			{
+				if (u.isSampler || u.value.empty ()) continue;
+				h = MergeHashBytes (h, u.value.data (), u.value.size ());
+			}
+			return h;
+		}
+
+		static void FlushOpenDraw ()
+		{
+			if (!gOpenDraw.valid) return;
+			if (bgfx::isValid (gOpenDraw.index))
+				bgfx::setIndexBuffer (gOpenDraw.index, gOpenDraw.first, gOpenDraw.count);
+			bgfx::setState (gOpenDraw.state);
+			bgfx::submit (gOpenDraw.view, gOpenDraw.program);
+			gOpenDraw.valid = false;
+			gOpenMergeKey.valid = false;
+		}
+
+		static bool MergeableWithOpen (const MergeKey& key)
+		{
+			if (!gOpenDraw.valid || !gOpenMergeKey.valid) return false;
+			if (!key.indexed || key.instances != 1) return false;
+			if (gOpenMergeKey.indexed != key.indexed
+			||  gOpenMergeKey.program != key.program
+			||  gOpenMergeKey.fbo != key.fbo
+			||  gOpenMergeKey.state != key.state
+			||  gOpenMergeKey.attachment != key.attachment
+			||  gOpenMergeKey.indexHandle != key.indexHandle
+			||  gOpenMergeKey.indexRevision != key.indexRevision
+			||  gOpenMergeKey.vertexSig != key.vertexSig
+			||  gOpenMergeKey.texHash != key.texHash
+			||  gOpenMergeKey.uniformHash != key.uniformHash) return false;
+			return gOpenMergeKey.indexFirst + gOpenMergeKey.indexCount == key.indexFirst;
+		}
+
+
 		void BindVertexStreams (VertexArrayData* vao)
 		{
 			if (vao == nullptr) return;
 			ProfScope profBind (&gProfBindUs);
+
+			// [cne-merge] Decide before touching the encoder: if this draw only extends the index
+			// range of the open draw, skip it entirely; otherwise flush the open draw first (its
+			// encoder state is still intact apart from the index buffer the caller just bound).
+			gMergeThisDraw = false;
+			{
+				MergeKey key;
+				key.valid = true;
+				key.indexed = gPendingIndexed;
+				key.instances = gPendingInstances;
+				key.program = MetalContext::state.currentProgram;
+				key.fbo = MetalContext::state.currentFramebuffer;
+				{
+					auto fbIt = framebuffers.find (key.fbo);
+					key.attachment = (fbIt != framebuffers.end ()) ? fbIt->second.texture : 0;
+				}
+				key.state = ToBgfxState ();
+				key.indexHandle = (int)gPendingIndex.idx;
+				key.indexFirst = gPendingFirst;
+				key.indexCount = gPendingCount;
+				key.indexRevision = gPendingIndexRevision;
+				key.vertexSig = VertexBindSignature (vao);
+				{
+					uint64_t th = 1469598103934665603ull;
+					for (auto& b : MetalContext::boundTextures)
+					{
+						th = MergeHashBytes (th, &b.first, sizeof (b.first));
+						th = MergeHashBytes (th, &b.second, sizeof (b.second));
+						auto t = textures.find (b.second);
+						const uint32_t hi = (t != textures.end ()) ? t->second.handle.idx : 0;
+						const uint32_t sf = (t != textures.end ()) ? t->second.samplerFlags : 0;
+						th = MergeHashBytes (th, &hi, sizeof (hi));
+						th = MergeHashBytes (th, &sf, sizeof (sf));
+					}
+					key.texHash = th;
+				}
+				key.uniformHash = UniformValueHash (CurrentProgram ());
+				gCurrentMergeKey = key;
+				if (gMergeDrawsEnabled && gPendingIndexed && gPendingInstances == 1 && MergeableWithOpen (key))
+				{
+					gOpenMergeKey.indexCount += key.indexCount;
+					gOpenDraw.count = gOpenMergeKey.indexCount;
+					gMergeThisDraw = true;
+					return;
+				}
+				FlushOpenDraw ();
+			}
 
 			// [cne-shader-audit] remember which GL attribute locations this draw really fed
 			// (real vertex arrays below + constant attributes turned into a stream).
@@ -3668,6 +3834,8 @@ namespace lime {
 
 		void WorldCornerCopyPass (bgfx::ViewId hostView)
 		{
+			// [cne-merge] the copy pass must not capture the open draw's encoder state.
+			FlushOpenDraw ();
 			(void)hostView;
 			static const bool enabled = [] ()
 			{
@@ -4247,6 +4415,8 @@ namespace lime {
 
 		void ApplyFrameViewOrderImpl ()
 		{
+			// [cne-merge] submit the still-open merged draw before the view graph is built.
+			FlushOpenDraw ();
 			ReadBackTick ();
 			// [cne-copy] the corner observation is submitted from SubmitDraw, right after the
 			// screen composite, so it always samples the finished world target.
@@ -6025,6 +6195,12 @@ namespace lime {
 		}
 		void SubmitDraw (uint32_t numVertices, bgfx::IndexBufferHandle indexBuffer, uint32_t numIndices, bool indexed, uint32_t numInstances)
 		{
+			if (gMergeThisDraw)
+			{
+				gMergeThisDraw = false;
+				gCurrentMergeKey.valid = false;
+				return;
+			}
 			++metal::gSubmitDraw;
 			ProgramData* program = CurrentProgram ();
 			if (program == nullptr || !bgfx::isValid (program->handle))
@@ -6979,6 +7155,25 @@ namespace lime {
 				(void)numIndices;
 			}
 
+			// [cne-merge] Keep indexed single-instance draws open so the next compatible draw can
+			// extend the same index range.  Everything else is submitted immediately (the open
+			// draw was already flushed in BindVertexStreams).
+			if (gMergeDrawsEnabled && indexed && numInstances == 1 && gCurrentMergeKey.valid && gCurrentMergeKey.indexed)
+			{
+				gCurrentMergeKey.valid = true;
+				gOpenMergeKey = gCurrentMergeKey;
+				gOpenMergeKey.valid = true;
+				gOpenDraw.valid = true;
+				gOpenDraw.program = program->handle;
+				gOpenDraw.view = view;
+				gOpenDraw.index = gPendingIndex;
+				gOpenDraw.first = gPendingFirst;
+				gOpenDraw.count = gPendingCount;
+				gOpenDraw.state = gCurrentMergeKey.state;
+				gCurrentMergeKey.valid = false;
+				return;
+			}
+
 			if (numInstances > 1)
 			{
 				{ ProfScope profSub (&gProfBgfxSubmitUs); bgfx::submit (view, program->handle, 0, numInstances); }
@@ -7109,6 +7304,12 @@ namespace lime {
 			buffer->second.bytes.size (), type, firstIndex, (uint32_t)count);
 
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
+		gPendingIndexed = true;
+		gPendingIndex = indexHandle;
+		gPendingFirst = firstIndex;
+		gPendingCount = (uint32_t)count;
+		gPendingIndexRevision = buffer->second.revision;
+		gPendingInstances = 1;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
@@ -7130,6 +7331,8 @@ namespace lime {
 		}
 
 		cne_capture::SetArrays ((uint32_t)count);
+		gPendingIndexed = false;
+		gPendingInstances = 1;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, 1);
@@ -7161,6 +7364,12 @@ namespace lime {
 		const uint32_t firstIndex = (uint32_t)(offset / (double)elementSize);
 
 		bgfx::setIndexBuffer (indexHandle, firstIndex, (uint32_t)count);
+		gPendingIndexed = true;
+		gPendingIndex = indexHandle;
+		gPendingFirst = firstIndex;
+		gPendingCount = (uint32_t)count;
+		gPendingIndexRevision = buffer->second.revision;
+		gPendingInstances = (uint32_t)instanceCount;
 		BindVertexStreams (&it->second);
 		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
 			BGFX_INVALID_HANDLE, (uint32_t)count, true, (uint32_t)instanceCount);
@@ -7179,6 +7388,8 @@ namespace lime {
 			it = vertexArrays.emplace (MetalContext::state.currentVertexArray, VertexArrayData ()).first;
 		}
 
+		gPendingIndexed = false;
+		gPendingInstances = (uint32_t)instanceCount;
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, (uint32_t)instanceCount);
 	}
