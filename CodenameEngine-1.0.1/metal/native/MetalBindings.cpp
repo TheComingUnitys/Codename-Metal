@@ -576,9 +576,17 @@ namespace lime {
 		// again is skipped (encoder state is sticky until the frame ends).
 		static uint64_t gAppliedState = ~0ull;
 		static uint32_t gAppliedStateFrame = 0xFFFFFFFFu;
+		// [cne-debug] CNE_METAL_LEGACY=1 restores the pre-optimisation draw behaviour
+		// (no FBO/view/clear/state caches, no screen-view reuse) for crash bisection.
+		static const bool gLegacyDraw = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_LEGACY");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
+
 		inline void ApplyBgfxState (uint64_t state)
 		{
-			if (state == gAppliedState && metal::gFrameIndex == gAppliedStateFrame) return;
+			if (!gLegacyDraw && state == gAppliedState && metal::gFrameIndex == gAppliedStateFrame) return;
 			bgfx::setState (state);
 			gAppliedState = state;
 			gAppliedStateFrame = metal::gFrameIndex;
@@ -1769,6 +1777,12 @@ namespace lime {
 			uint32_t flags = 0;
 		};
 		static std::vector<MergeRange> gOpenRanges;
+		static const bool gTraceDraws = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_TRACE");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
+		static int gTraceCount = 0;
 		// [cne-instance] true for the draw being prepared when it uses i_dataN attributes;
 		// such draws must never be merged/deferred because the instance buffer is per-draw.
 		static bool gDrawUsesInstanceAttribs = false;
@@ -1947,6 +1961,12 @@ namespace lime {
 		static void FlushOpenDraw ()
 		{
 			if (!gOpenDraw.valid) return;
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] f=%u flushOpen view=%u ranges=%zu count=%u\n",
+					metal::gFrameIndex, (unsigned)gOpenDraw.view, gOpenRanges.size (), gOpenDraw.count);
+				std::fflush (stderr);
+			}
 			if (!gOpenRanges.empty ())
 			{
 				if (gOpenRanges.size () == 1)
@@ -3919,8 +3939,8 @@ namespace lime {
 			// the program's first submit of a frame and only the dirty uniforms afterwards is
 			// equivalent to uploading every draw - without the per-draw cost.
 			const uint32_t frame = metal::gFrameIndex;
-			const bool uploadAllUniforms = program->uniformFrame != frame;
-			const bool uploadAllSamplers = program->samplerKeysFrame != frame;
+			const bool uploadAllUniforms = gLegacyDraw || program->uniformFrame != frame;
+			const bool uploadAllSamplers = gLegacyDraw || program->samplerKeysFrame != frame;
 			program->uniformFrame = frame;
 			program->samplerKeysFrame = frame;
 			if (program->samplerKeys.size () != program->uniforms.size ())
@@ -4728,6 +4748,12 @@ namespace lime {
 		{
 			// [cne-merge] submit the still-open merged draw before the view graph is built.
 			FlushOpenDraw ();
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] f=%u order begin passes=%zu\n",
+					metal::gFrameIndex, gFramePasses.size ());
+				std::fflush (stderr);
+			}
 			ReadBackTick ();
 			// [cne-copy] the corner observation is submitted from SubmitDraw, right after the
 			// screen composite, so it always samples the finished world target.
@@ -4830,12 +4856,10 @@ namespace lime {
 				}
 			}
 
-			// Offscreen views may overflow into 251.. (C31), so the order array must cover the
-			// whole bgfx view range.
-			static bgfx::ViewId execOrder[8192];
+			// bgfx has at most 256 views; the order array must never exceed that count.
+			static bgfx::ViewId execOrder[256];
 			size_t at = 0;
-			bool used[8192] = { false };
-			int maxView = 199;
+			bool used[256] = { false };
 			// View 199 is the backbuffer clear (submitted with touch(), so it has no draw pass
 			// and would otherwise land after the screen views and clear the finished frame).
 			execOrder[at++] = 199;
@@ -4843,13 +4867,18 @@ namespace lime {
 			for (size_t idx : order)
 			{
 				const bgfx::ViewId v = gFramePasses[idx].view;
-				if (v < 8192 && !used[v]) { used[v] = true; execOrder[at++] = v; if ((int)v > maxView) maxView = (int)v; }
+				if (v < 256 && !used[v]) { used[v] = true; execOrder[at++] = v; }
 			}
-			for (int v = 0; v <= maxView && at < 8192; ++v)
+			for (int v = 0; v < 256 && at < 256; ++v)
 			{
 				if (!used[v]) execOrder[at++] = (bgfx::ViewId)v;
 			}
 
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] f=%u order set at=%zu\n", metal::gFrameIndex, at);
+				std::fflush (stderr);
+			}
 			bgfx::setViewOrder (0, (uint16_t)at, execOrder);
 
 			// [cne-resize] Post-restore execution order: a later pass sorting before the world
@@ -4892,7 +4921,7 @@ namespace lime {
 						lastLoggedFrame = metal::gFrameIndex;
 						auto positionOf = [&] (bgfx::ViewId id) -> int
 						{
-							for (int i = 0; i < 8192; ++i) if (execOrder[i] == id) return i;
+							for (int i = 0; i < 256; ++i) if (execOrder[i] == id) return i;
 							return -1;
 						};
 						std::fprintf (stderr, "[cne-vieworder] f=%u passes:", metal::gFrameIndex);
@@ -5670,6 +5699,12 @@ namespace lime {
 		inline bgfx::FrameBufferHandle EnsureFramebufferFast (int framebufferId)
 		{
 			if (framebufferId == 0) return BGFX_INVALID_HANDLE;
+			if (gLegacyDraw)
+			{
+				EnsureFramebuffer (framebufferId);
+				auto lf = framebuffers.find (framebufferId);
+				return (lf != framebuffers.end ()) ? lf->second.handle : bgfx::FrameBufferHandle ();
+			}
 			static int lastId = -1;
 			static uint32_t lastGen = 0;
 			static bgfx::FrameBufferHandle last = BGFX_INVALID_HANDLE;
@@ -5868,7 +5903,7 @@ namespace lime {
 				// covers the whole backbuffer the composite overwrites every pixel each frame.
 				const bool letterboxed = MetalContext::state.viewport[2] != MetalContext::state.backbufferWidth
 					|| MetalContext::state.viewport[3] != MetalContext::state.backbufferHeight;
-				if (fullBufferClear && letterboxed)
+				if (fullBufferClear && (gLegacyDraw || letterboxed))
 				{
 					bgfx::setViewRect (199, 0, 0,
 						(uint16_t)MetalContext::state.backbufferWidth,
@@ -5901,7 +5936,7 @@ namespace lime {
 						MetalContext::state.scissorEnabled ? 1 : 0,
 						MetalContext::state.scissor[0], MetalContext::state.scissor[1],
 						MetalContext::state.scissor[2], MetalContext::state.scissor[3], 0 };
-					bool sameKey = gLastScreenKeyValid && gLastScreenView != 0;
+					bool sameKey = !gLegacyDraw && gLastScreenKeyValid && gLastScreenView != 0;
 					if (sameKey)
 					{
 						for (int k = 0; k < 10; ++k) if (key[k] != gLastScreenKey[k]) { sameKey = false; break; }
@@ -5935,16 +5970,16 @@ namespace lime {
 					else
 					{
 						if (gOverflowView == 0) gOverflowView = 251;
-						if (gOverflowView > 8190)
+						if (gOverflowView > 255)
 						{
 							static bool warnedViewLimit = false;
 							if (!warnedViewLimit)
 							{
 								warnedViewLimit = true;
-								std::fprintf (stderr, "[cne-view] offscreen view overflow exhausted; reusing view 8190\n");
+								std::fprintf (stderr, "[cne-view] offscreen view overflow exhausted; reusing view 255\n");
 								std::fflush (stderr);
 							}
-							gActiveView = 8190;
+							gActiveView = 255;
 						}
 						else
 						{
@@ -6078,7 +6113,7 @@ namespace lime {
 		{
 			ViewRectCache& c = gViewRectCache[view];
 			if (c.target != target) { c.target = target; c.x = c.y = c.w = c.h = -1; c.sx = c.sy = c.sw = c.sh = -1; }
-			if (x == c.x && y == c.y && w == c.w && h == c.h) return;
+			if (!gLegacyDraw && x == c.x && y == c.y && w == c.w && h == c.h) return;
 			c.x = x; c.y = y; c.w = w; c.h = h;
 			bgfx::setViewRect (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
 		}
@@ -6089,7 +6124,7 @@ namespace lime {
 			const uint64_t key = ((uint64_t)flags << 48) ^ ((uint64_t)color << 16)
 				^ (uint64_t)(uint32_t)(depth * 1000.0f) ^ ((uint64_t)stencil << 8)
 				^ (gClearStateGeneration << 56);
-			if (key == c.clearKey) return;
+			if (!gLegacyDraw && key == c.clearKey) return;
 			c.clearKey = key;
 			bgfx::setViewClear (view, flags, color, depth, stencil);
 		}
@@ -6098,7 +6133,7 @@ namespace lime {
 		{
 			ViewRectCache& c = gViewRectCache[view];
 			if (c.target != target) { c.target = target; c.sx = c.sy = c.sw = c.sh = -1; }
-			if (on == c.scOn && x == c.sx && y == c.sy && w == c.sw && h == c.sh) return;
+			if (!gLegacyDraw && on == c.scOn && x == c.sx && y == c.sy && w == c.sw && h == c.sh) return;
 			c.scOn = on; c.sx = x; c.sy = y; c.sw = w; c.sh = h;
 			bgfx::setViewScissor (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
 		}
@@ -6533,6 +6568,18 @@ namespace lime {
 				return;
 			}
 			++metal::gSubmitDraw;
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				if (ProgramData* tp = CurrentProgram ())
+				{
+					std::fprintf (stderr, "[cne-trace] f=%u submit prog=%d view=? fbo=%d indexed=%d n=%u inst=%u\n",
+						metal::gFrameIndex, MetalContext::state.currentProgram,
+						MetalContext::state.currentFramebuffer, indexed ? 1 : 0,
+						numIndices, numInstances);
+					std::fflush (stderr);
+					++gTraceCount;
+				}
+			}
 			ProgramData* program = CurrentProgram ();
 			if (program == nullptr || !bgfx::isValid (program->handle))
 			{
