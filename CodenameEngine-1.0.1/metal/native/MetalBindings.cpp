@@ -548,18 +548,21 @@ namespace lime {
 		// [cne-fastpath] GL ids are dense-ish compile-time-unknown ints; the hot draw path
 		// only does lookups, and unordered_map keeps element references stable across
 		// rehashes (nb: iterators are not stable; no code holds one across an insert).
-		std::unordered_map<int, ShaderData> shaders;
-		std::unordered_map<int, ProgramData> programs;
-		std::unordered_map<int, BufferData> buffers;
-		std::unordered_map<int, TextureData> textures;
-		std::unordered_map<int, FramebufferData> framebuffers;
-		std::unordered_map<int, RenderbufferData> renderbuffers;
-		std::unordered_map<int, VertexArrayData> vertexArrays;
+		// std::map keeps references/iterators stable across insertions.  The draw path
+		// holds references into these tables while inserting other entries (multiple
+		// vertex streams, FBO attachments); unordered_map rehashing invalidated them.
+		std::map<int, ShaderData> shaders;
+		std::map<int, ProgramData> programs;
+		std::map<int, BufferData> buffers;
+		std::map<int, TextureData> textures;
+		std::map<int, FramebufferData> framebuffers;
+		std::map<int, RenderbufferData> renderbuffers;
+		std::map<int, VertexArrayData> vertexArrays;
 
 		int nextDenseLocation = 1;
 
 		/** The Haxe GLSL→MSL translator reports attribute slots through this map. */
-		std::unordered_map<int, std::map<uint8_t, uint8_t>> attribSlots;
+		std::map<int, std::map<uint8_t, uint8_t>> attribSlots;
 		// [cne-instance] glLocation -> bgfx instance data slot (i_dataN) for per-instance attrs.
 		std::unordered_map<int, std::map<uint8_t, int>> instanceAttribs;
 
@@ -597,6 +600,12 @@ namespace lime {
 			int refs = 0;
 		};
 		static std::map<uint64_t, DepthPoolEntry> gDepthPool;
+		// [cne-debug] CNE_METAL_SHARED_DEPTH=0: per-FBO depth textures (pre-C24 behaviour).
+		static const bool gSharedDepthEnabled = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_SHARED_DEPTH");
+			return v == nullptr || !(v[0] == '0' && v[1] == '\0');
+		} ();
 		static inline uint64_t DepthKey (int w, int h)
 		{
 			return ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
@@ -604,6 +613,11 @@ namespace lime {
 		static inline bgfx::TextureHandle AcquireDepth (int w, int h)
 		{
 			if (w <= 0 || h <= 0) return bgfx::TextureHandle ();
+			if (!gSharedDepthEnabled)
+			{
+				return bgfx::createTexture2D ((uint16_t)w, (uint16_t)h, false, 1,
+					bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT, nullptr);
+			}
 			DepthPoolEntry& e = gDepthPool[DepthKey (w, h)];
 			if (!bgfx::isValid (e.handle))
 			{
@@ -616,6 +630,11 @@ namespace lime {
 		static inline void ReleaseDepth (bgfx::TextureHandle handle)
 		{
 			if (!bgfx::isValid (handle)) return;
+			if (!gSharedDepthEnabled)
+			{
+				bgfx::destroy (handle);
+				return;
+			}
 			for (auto& e : gDepthPool)
 			{
 				if (e.second.handle.idx != handle.idx) continue;
@@ -3672,7 +3691,7 @@ namespace lime {
 
 		if (MtlAuditEnabled ())
 		{
-			auto loaderOf = [] (std::unordered_map<int, ShaderData>& table, int shaderId) -> const char*
+			auto loaderOf = [] (std::map<int, ShaderData>& table, int shaderId) -> const char*
 			{
 				auto found = table.find (shaderId);
 				return (found == table.end ()) ? "-" : found->second.origin;

@@ -238,7 +238,7 @@ namespace metal {
 			static State state;
 
 			/** Mirrors of the GL texture binding per unit (unit -> object id). */
-			static std::unordered_map<int, int> boundTextures;
+			static std::map<int, int> boundTextures;
 
 			/** cpu-side uniform shadow buffer for the program currently in use. */
 			static std::vector<uint8_t> uniformScratch;

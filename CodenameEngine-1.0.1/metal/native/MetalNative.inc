@@ -803,6 +803,14 @@
 		return cached;
 	}
 
+	// [cne-debug] CNE_METAL_RT_TEXTURES=1: create all textures with BGFX_TEXTURE_RT and
+	// recreate them on upload (pre-B16 behaviour) instead of streaming data textures.
+	static const bool gForceRtTextures = [] ()
+	{
+		const char* v = std::getenv ("CNE_METAL_RT_TEXTURES");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	} ();
+
 	//@impl cne_metal_tex_image_2d
 	void cne_metal_tex_image_2d (int target, int level, int internalformat, int width, int height, int border, int format, int type, double data) {
 		ProfScope prof (&gProfTexUs);
@@ -886,6 +894,7 @@
 		const bgfx::TextureFormat::Enum bgfxFmt =
 			(bgfx::TextureFormat::Enum)ToBgfxFormat (internalformat, uploadFormat, type);
 		texture->bgfxFormat = bgfxFmt;
+		if (gForceRtTextures) texture->handleIsRt = true;
 
 		// Data textures are created *without* BGFX_TEXTURE_RT so a same-size re-upload can use
 		// bgfx::updateTexture2D in place (video frames, animated textures, text atlases).  The

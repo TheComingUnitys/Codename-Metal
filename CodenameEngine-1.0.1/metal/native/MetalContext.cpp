@@ -198,7 +198,7 @@ namespace metal {
 		return backbufferFrameBuffer;
 	}
 	MetalContext::State MetalContext::state;
-	std::unordered_map<int, int> MetalContext::boundTextures;
+	std::map<int, int> MetalContext::boundTextures;
 	std::vector<uint8_t> MetalContext::uniformScratch;
 
 	namespace {
