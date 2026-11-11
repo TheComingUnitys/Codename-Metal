@@ -165,6 +165,8 @@ replayer uses neither bgfx nor lime_gl. It is also the prerequisite for "drop bg
 | Switch | Effect |
 | --- | --- |
 | `CNE_METAL_NOBLEND=1` | disable blending (separates "alpha is 0" from "not drawn") |
+| `CNE_METAL_MERGE_DRAWS=0` | disable deferred open-draw merging (A/B) |
+| `CNE_METAL_MERGE_STATS=1` | every 120 frames: merged draws/ranges/builds and merged-index cache size |
 | `CNE_METAL_TEX_UPDATE=1` | experiment: stream textures through `updateTexture2D` (once caused a black screen) |
 | `CNE_METAL_TEX_BGRA=1` | force BGRA storage for RGBA uploads |
 | `CNE_METAL_FORCE_SOURCE_COMPILE=1` | skip metallibs, compile at runtime |

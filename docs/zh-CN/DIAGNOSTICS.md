@@ -160,6 +160,8 @@ python3 ./metal/tools/native_replay/diff.py /tmp/cne-shot/frame.raw /tmp/replay.
 | 开关 | 作用 |
 | --- | --- |
 | `CNE_METAL_NOBLEND=1` | 关闭混合（用于区分“alpha 为 0”与“没画”） |
+| `CNE_METAL_MERGE_DRAWS=0` | 关闭延迟提交的 draw 合并（A/B 对照） |
+| `CNE_METAL_MERGE_STATS=1` | 每 120 帧输出合并 draw 数/区间数/新建 buffer 数及合并缓存大小 |
 | `CNE_METAL_TEX_UPDATE=1` | 试验：流式纹理走 `updateTexture2D`（曾导致全黑，默认关） |
 | `CNE_METAL_TEX_BGRA=1` | 强制 RGBA 上传按 BGRA 存储（字节序排查用） |
 | `CNE_METAL_FORCE_SOURCE_COMPILE=1` | 跳过 metallib，强制运行时编译（排查预编译库问题） |

@@ -480,6 +480,7 @@
 			GenericAttrib& attrib = genericAttribs[index];
 			attrib.integer = false;
 			attrib.f[0] = x; attrib.f[1] = y; attrib.f[2] = z; attrib.f[3] = w;
+			MetalContext::NoteGenericAttrib (index, attrib.f, false);
 		}
 
 		void SetGenericAttribI (int index, uint32_t x, uint32_t y, uint32_t z, uint32_t w)
@@ -487,6 +488,8 @@
 			GenericAttrib& attrib = genericAttribs[index];
 			attrib.integer = true;
 			attrib.u[0] = x; attrib.u[1] = y; attrib.u[2] = z; attrib.u[3] = w;
+			const float asFloat[4] = {(float)x, (float)y, (float)z, (float)w};
+			MetalContext::NoteGenericAttrib (index, asFloat, true);
 		}
 
 		void GetVertexAttribFloat (int index, int pname, float* out)

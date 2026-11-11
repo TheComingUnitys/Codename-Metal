@@ -141,6 +141,14 @@ namespace metal {
 			static void SetVsync (bool vsync);
 
 			/**
+				[cne-merge] Hash of the generic (non-array) vertex attributes set through
+				glVertexAttrib*f.  Two draws whose constant attributes differ (e.g. per-sprite
+				alpha/colour) must never be merged into one submission.
+			**/
+			static void NoteGenericAttrib (int index, const float* values, bool integer);
+			static uint64_t GenericAttribHash ();
+
+			/**
 				Ask Frame() to rebuild the swap chain and invalidate every offscreen framebuffer at
 				the next frame boundary.  This reproduces exactly what minimizing/restoring the
 				window does, which is the only thing that fixes the upside-down orientation some

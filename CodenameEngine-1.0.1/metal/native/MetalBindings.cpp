@@ -1620,6 +1620,10 @@ namespace lime {
 			float value[4];
 		};
 
+		// Defined with the draw-merge state below; declared here because releasing a cached
+		// index buffer (revision change / delete) must also drop merged buffers built from it.
+		static inline void InvalidateMergedIndexForSource (int handleIdx);
+
 		bgfx::DynamicIndexBufferHandle CachedIndexBuffer (uint32_t bufferId,
 			const std::vector<uint8_t>& bytes, uint32_t revision, uint16_t flags)
 		{
@@ -1638,7 +1642,11 @@ namespace lime {
 
 			if (slot.dynamic.idx == bgfx::kInvalidHandle || slot.signature != h || slot.size != byteSize)
 			{
-				if (slot.dynamic.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.dynamic);
+				if (slot.dynamic.idx != bgfx::kInvalidHandle)
+				{
+					InvalidateMergedIndexForSource (slot.dynamic.idx);
+					bgfx::destroy (slot.dynamic);
+				}
 				slot.dynamic = bgfx::createDynamicIndexBuffer (
 					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize), flags);
 				slot.signature = h;
@@ -1680,6 +1688,25 @@ namespace lime {
 			return h;
 		}
 
+		// Values of the draw currently being prepared (set by the draw entry points before
+		// BindVertexStreams; the bgfx index buffer is bound there).
+		static bool gPendingIndexed = false;
+		static bgfx::DynamicIndexBufferHandle gPendingIndex = bgfx::DynamicIndexBufferHandle ();
+		static uint32_t gPendingFirst = 0;
+		static uint32_t gPendingCount = 0;
+		static uint32_t gPendingIndexRevision = 0;
+		static uint32_t gPendingInstances = 1;
+		static int gPendingIndexBufferId = 0;
+		static uint32_t gPendingIndexFlags = 0;
+		static uint32_t gPendingNumVertices = 0;
+
+		static uint64_t MergeHashBytes (uint64_t h, const void* p, size_t n)
+		{
+			const uint8_t* b = (const uint8_t*)p;
+			for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+			return h;
+		}
+
 		// [cne-merge] D38: one open indexed draw is kept pending; the next draw merges into it
 		// when everything except the index range is identical.  Flush happens when the state
 		// would change, or at the end of the frame (before ApplyFrameViewOrder).
@@ -1699,6 +1726,10 @@ namespace lime {
 			uint64_t vertexSig = 0;
 			uint64_t texHash = 0;
 			uint64_t uniformHash = 0;
+			uint64_t constantHash = 0;   // glVertexAttrib*f generic attributes
+			uint32_t numVertices = 0;    // constant-stream size; merging requires equal
+			uint32_t indexType = 0;      // BGFX_BUFFER_INDEX32 or BGFX_BUFFER_NONE
+			uint64_t vpHash = 0;         // viewport/scissor: screen views may differ per key (C28)
 		};
 
 		static const bool gMergeDrawsEnabled = [] ()
@@ -1707,6 +1738,143 @@ namespace lime {
 			if (v == nullptr) return true;
 			return !(v[0] == '0' && v[1] == '\0');
 		} ();
+		/// One index range contributed to the open draw.  Disjoint ranges in the same or
+		/// different index buffers are merged through the merged-index cache at flush time.
+		struct MergeRange
+		{
+			int bufferId = 0;
+			int handleIdx = 0;
+			uint32_t first = 0;
+			uint32_t count = 0;
+			uint32_t revision = 0;
+			uint32_t flags = 0;
+		};
+		static std::vector<MergeRange> gOpenRanges;
+
+		struct MergedIndexEntry
+		{
+			bgfx::DynamicIndexBufferHandle handle = bgfx::DynamicIndexBufferHandle ();
+			uint32_t count = 0;
+			uint32_t bytes = 0;
+			uint32_t lastUse = 0;
+			std::vector<int> sources;   // bgfx handle idxs, for invalidation on buffer delete
+		};
+		static std::map<uint64_t, MergedIndexEntry> gMergedIndexCache;
+		static size_t gMergedIndexBytes = 0;
+		// [cne-merge] CNE_METAL_MERGE_STATS=1: merged draws / ranges / buffers built.
+		static const bool gMergeStatsEnabled = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_MERGE_STATS");
+			return v != nullptr && v[0] != '0' && v[0] != '\0';
+		} ();
+		static uint64_t gMergeStatDraws = 0;
+		static uint64_t gMergeStatRanges = 0;
+		static uint64_t gMergeStatBuilds = 0;
+		static constexpr size_t kMergedEntriesCap = 128;
+		static constexpr size_t kMergedBytesCap = 8u << 20;
+
+		static inline void InvalidateMergedIndexForSource (int handleIdx)
+		{
+			for (auto it = gMergedIndexCache.begin (); it != gMergedIndexCache.end (); )
+			{
+				bool uses = false;
+				for (int s : it->second.sources) if (s == handleIdx) { uses = true; break; }
+				if (!uses) { ++it; continue; }
+				if (bgfx::isValid (it->second.handle)) bgfx::destroy (it->second.handle);
+				gMergedIndexBytes -= it->second.bytes;
+				it = gMergedIndexCache.erase (it);
+			}
+		}
+
+		static MergeRange CurrentMergeRange ()
+		{
+			MergeRange r;
+			r.bufferId = gPendingIndexBufferId;
+			r.handleIdx = (int)gPendingIndex.idx;
+			r.first = gPendingFirst;
+			r.count = gPendingCount;
+			r.revision = gPendingIndexRevision;
+			r.flags = gPendingIndexFlags;
+			return r;
+		}
+
+		static uint64_t MergedRangesKey (const std::vector<MergeRange>& ranges)
+		{
+			uint64_t h = 1469598103934665603ull;
+			for (const MergeRange& r : ranges)
+			{
+				h = MergeHashBytes (h, &r.bufferId, sizeof (r.bufferId));
+				h = MergeHashBytes (h, &r.handleIdx, sizeof (r.handleIdx));
+				h = MergeHashBytes (h, &r.first, sizeof (r.first));
+				h = MergeHashBytes (h, &r.count, sizeof (r.count));
+				h = MergeHashBytes (h, &r.revision, sizeof (r.revision));
+				h = MergeHashBytes (h, &r.flags, sizeof (r.flags));
+			}
+			return h;
+		}
+
+		/// Returns a dynamic index buffer holding the concatenation of `ranges` (first=0).
+		/// Cache hit when the exact range list was used before (common for HUD/text batches).
+		static bgfx::DynamicIndexBufferHandle GetMergedIndex (const std::vector<MergeRange>& ranges,
+			uint32_t& countOut)
+		{
+			countOut = 0;
+			const uint64_t key = MergedRangesKey (ranges);
+			auto found = gMergedIndexCache.find (key);
+			if (found != gMergedIndexCache.end () && bgfx::isValid (found->second.handle))
+			{
+				found->second.lastUse = metal::gFrameIndex;
+				countOut = found->second.count;
+				return found->second.handle;
+			}
+
+			std::vector<uint8_t> data;
+			std::vector<int> sources;
+			for (const MergeRange& r : ranges)
+			{
+				auto b = buffers.find (r.bufferId);
+				if (b == buffers.end ()) return bgfx::DynamicIndexBufferHandle ();
+				const uint32_t elem = (r.flags & BGFX_BUFFER_INDEX32) ? 4u : 2u;
+				const size_t begin = (size_t)r.first * elem;
+				const size_t size = (size_t)r.count * elem;
+				if (begin + size > b->second.bytes.size ()) return bgfx::DynamicIndexBufferHandle ();
+				data.insert (data.end (), b->second.bytes.begin () + begin, b->second.bytes.begin () + begin + size);
+				countOut += r.count;
+				sources.push_back (r.handleIdx);
+			}
+			if (data.empty ()) return bgfx::DynamicIndexBufferHandle ();
+
+			bgfx::DynamicIndexBufferHandle handle = bgfx::createDynamicIndexBuffer (
+				bgfx::copy (data.data (), (uint32_t)data.size ()), (uint16_t)ranges.front ().flags);
+			if (!bgfx::isValid (handle)) return handle;
+
+			MergedIndexEntry entry;
+			entry.handle = handle;
+			entry.count = countOut;
+			entry.bytes = (uint32_t)data.size ();
+			entry.lastUse = metal::gFrameIndex;
+			entry.sources = sources;
+			gMergedIndexCache[key] = entry;
+			gMergedIndexBytes += entry.bytes;
+			++gMergeStatBuilds;
+
+			// Bound the cache; destroy is safe while submissions are pending (bgfx defers it).
+			while (gMergedIndexCache.size () > kMergedEntriesCap || gMergedIndexBytes > kMergedBytesCap)
+			{
+				auto oldest = gMergedIndexCache.end ();
+				for (auto it = gMergedIndexCache.begin (); it != gMergedIndexCache.end (); ++it)
+				{
+					if (it->first == key) continue;
+					if (oldest == gMergedIndexCache.end () || it->second.lastUse < oldest->second.lastUse) oldest = it;
+				}
+				if (oldest == gMergedIndexCache.end ()) break;
+				if (bgfx::isValid (oldest->second.handle)) bgfx::destroy (oldest->second.handle);
+				gMergedIndexBytes -= oldest->second.bytes;
+				gMergedIndexCache.erase (oldest);
+			}
+			return handle;
+		}
+
 		static MergeKey gCurrentMergeKey;
 		static MergeKey gOpenMergeKey;
 		static bool gMergeThisDraw = false;
@@ -1720,22 +1888,6 @@ namespace lime {
 			uint32_t count = 0;
 			uint64_t state = 0;
 		} gOpenDraw;
-
-		// Index range of the draw being prepared, set by the lime_gl/cne_metal draw entry
-		// points before BindVertexStreams (the bgfx index buffer is bound there).
-		static bool gPendingIndexed = false;
-		static bgfx::DynamicIndexBufferHandle gPendingIndex = bgfx::DynamicIndexBufferHandle ();
-		static uint32_t gPendingFirst = 0;
-		static uint32_t gPendingCount = 0;
-		static uint32_t gPendingIndexRevision = 0;
-		static uint32_t gPendingInstances = 1;
-
-		static uint64_t MergeHashBytes (uint64_t h, const void* p, size_t n)
-		{
-			const uint8_t* b = (const uint8_t*)p;
-			for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
-			return h;
-		}
 
 		static uint64_t VertexBindSignature (const VertexArrayData* vao)
 		{
@@ -1773,12 +1925,62 @@ namespace lime {
 		static void FlushOpenDraw ()
 		{
 			if (!gOpenDraw.valid) return;
-			if (bgfx::isValid (gOpenDraw.index))
-				bgfx::setIndexBuffer (gOpenDraw.index, gOpenDraw.first, gOpenDraw.count);
+			if (!gOpenRanges.empty ())
+			{
+				if (gOpenRanges.size () == 1)
+				{
+					const MergeRange& r = gOpenRanges.front ();
+					bgfx::DynamicIndexBufferHandle h = bgfx::DynamicIndexBufferHandle ();
+					h.idx = (uint16_t)r.handleIdx;
+					if (bgfx::isValid (h)) bgfx::setIndexBuffer (h, r.first, r.count);
+				}
+				else
+				{
+					uint32_t mergedCount = 0;
+					bgfx::DynamicIndexBufferHandle merged = GetMergedIndex (gOpenRanges, mergedCount);
+					if (bgfx::isValid (merged))
+					{
+						bgfx::setIndexBuffer (merged, 0, mergedCount);
+					}
+					else
+					{
+						// Fallback: submit the ranges one at a time (state/vertex data are
+						// identical by construction), so nothing is lost when the merged
+						// index buffer cannot be built.
+						bgfx::setState (gOpenDraw.state);
+						for (const MergeRange& r : gOpenRanges)
+						{
+							bgfx::DynamicIndexBufferHandle h = bgfx::DynamicIndexBufferHandle ();
+							h.idx = (uint16_t)r.handleIdx;
+							if (bgfx::isValid (h)) bgfx::setIndexBuffer (h, r.first, r.count);
+							bgfx::submit (gOpenDraw.view, gOpenDraw.program);
+						}
+						gOpenRanges.clear ();
+						gOpenDraw.valid = false;
+						gOpenMergeKey.valid = false;
+						return;
+					}
+				}
+			}
 			bgfx::setState (gOpenDraw.state);
 			bgfx::submit (gOpenDraw.view, gOpenDraw.program);
+			gOpenRanges.clear ();
 			gOpenDraw.valid = false;
 			gOpenMergeKey.valid = false;
+
+			if (gMergeStatsEnabled && (metal::gFrameIndex % 120u) == 0u)
+			{
+				static uint32_t lastStatFrame = 0xFFFFFFFFu;
+				if (lastStatFrame != metal::gFrameIndex)
+				{
+					lastStatFrame = metal::gFrameIndex;
+					std::fprintf (stderr, "[cne-merge] f=%u mergedDraws=%llu mergedRanges=%llu mergedBuilds=%llu cacheEntries=%zu cacheBytes=%zu\n",
+						metal::gFrameIndex, (unsigned long long)gMergeStatDraws,
+						(unsigned long long)gMergeStatRanges, (unsigned long long)gMergeStatBuilds,
+						gMergedIndexCache.size (), gMergedIndexBytes);
+					std::fflush (stderr);
+				}
+			}
 		}
 
 		static bool MergeableWithOpen (const MergeKey& key)
@@ -1790,12 +1992,18 @@ namespace lime {
 			||  gOpenMergeKey.fbo != key.fbo
 			||  gOpenMergeKey.state != key.state
 			||  gOpenMergeKey.attachment != key.attachment
-			||  gOpenMergeKey.indexHandle != key.indexHandle
-			||  gOpenMergeKey.indexRevision != key.indexRevision
 			||  gOpenMergeKey.vertexSig != key.vertexSig
 			||  gOpenMergeKey.texHash != key.texHash
-			||  gOpenMergeKey.uniformHash != key.uniformHash) return false;
-			return gOpenMergeKey.indexFirst + gOpenMergeKey.indexCount == key.indexFirst;
+			||  gOpenMergeKey.uniformHash != key.uniformHash
+			||  gOpenMergeKey.constantHash != key.constantHash
+			||  gOpenMergeKey.numVertices != key.numVertices
+			||  gOpenMergeKey.indexType != key.indexType
+			||  gOpenMergeKey.vpHash != key.vpHash) return false;
+			// Disjoint ranges in the same or different index buffers are merged through the
+			// merged-index cache; bound the run so one flush cannot build a huge buffer.
+			if (gOpenRanges.size () >= 64) return false;
+			if ((uint64_t)gOpenDraw.count + key.indexCount > 3000000ull) return false;
+			return true;
 		}
 
 
@@ -1840,11 +2048,25 @@ namespace lime {
 					key.texHash = th;
 				}
 				key.uniformHash = UniformValueHash (CurrentProgram ());
+				key.constantHash = MetalContext::GenericAttribHash ();
+				key.numVertices = gPendingNumVertices;
+				key.indexType = gPendingIndexFlags;
+				{
+					uint64_t vh = 1469598103934665603ull;
+					vh = MergeHashBytes (vh, MetalContext::state.viewport, sizeof (MetalContext::state.viewport));
+					const int scissorOn = MetalContext::state.scissorEnabled ? 1 : 0;
+					vh = MergeHashBytes (vh, &scissorOn, sizeof (scissorOn));
+					vh = MergeHashBytes (vh, MetalContext::state.scissor, sizeof (MetalContext::state.scissor));
+					key.vpHash = vh;
+				}
 				gCurrentMergeKey = key;
 				if (gMergeDrawsEnabled && gPendingIndexed && gPendingInstances == 1 && MergeableWithOpen (key))
 				{
 					gOpenMergeKey.indexCount += key.indexCount;
 					gOpenDraw.count = gOpenMergeKey.indexCount;
+					gOpenRanges.push_back (CurrentMergeRange ());
+					++gMergeStatDraws;
+					++gMergeStatRanges;
 					gMergeThisDraw = true;
 					return;
 				}
@@ -4917,6 +5139,7 @@ namespace lime {
 			auto vb = vertexBufferSlots.find ((uint32_t)buffer);
 			if (vb != vertexBufferSlots.end ())
 			{
+				if (bgfx::isValid (vb->second.dynamic)) InvalidateMergedIndexForSource (vb->second.dynamic.idx);
 				if (bgfx::isValid (vb->second.dynamic)) bgfx::destroy (vb->second.dynamic);
 				if (bgfx::isValid (vb->second.handle)) bgfx::destroy (vb->second.handle);
 				vertexBufferSlots.erase (vb);
@@ -4924,6 +5147,7 @@ namespace lime {
 			auto ib = indexBufferSlots.find ((uint32_t)buffer);
 			if (ib != indexBufferSlots.end ())
 			{
+				if (bgfx::isValid (ib->second.dynamic)) InvalidateMergedIndexForSource (ib->second.dynamic.idx);
 				if (bgfx::isValid (ib->second.dynamic)) bgfx::destroy (ib->second.dynamic);
 				indexBufferSlots.erase (ib);
 			}
@@ -7188,6 +7412,8 @@ namespace lime {
 				gOpenDraw.first = gPendingFirst;
 				gOpenDraw.count = gPendingCount;
 				gOpenDraw.state = gCurrentMergeKey.state;
+				gOpenRanges.clear ();
+				gOpenRanges.push_back (CurrentMergeRange ());
 				gCurrentMergeKey.valid = false;
 				return;
 			}
@@ -7328,9 +7554,12 @@ namespace lime {
 		gPendingCount = (uint32_t)count;
 		gPendingIndexRevision = buffer->second.revision;
 		gPendingInstances = 1;
+		gPendingIndexFlags = flags;
+		gPendingIndexBufferId = elementBufferId;
+		gPendingNumVertices = MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count);
 
 		BindVertexStreams (&it->second);
-		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
+		SubmitDraw (gPendingNumVertices,
 			BGFX_INVALID_HANDLE, (uint32_t)count, true, 1);
 
 	}
@@ -7351,6 +7580,7 @@ namespace lime {
 		cne_capture::SetArrays ((uint32_t)count);
 		gPendingIndexed = false;
 		gPendingInstances = 1;
+		gPendingNumVertices = (uint32_t)count;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, 1);
@@ -7388,8 +7618,11 @@ namespace lime {
 		gPendingCount = (uint32_t)count;
 		gPendingIndexRevision = buffer->second.revision;
 		gPendingInstances = (uint32_t)instanceCount;
+		gPendingIndexFlags = flags;
+		gPendingIndexBufferId = elementBufferId;
+		gPendingNumVertices = MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count);
 		BindVertexStreams (&it->second);
-		SubmitDraw (MaxIndexPlusOneCached (buffer->second, elementSize, firstIndex, count),
+		SubmitDraw (gPendingNumVertices,
 			BGFX_INVALID_HANDLE, (uint32_t)count, true, (uint32_t)instanceCount);
 
 	}
@@ -7408,6 +7641,7 @@ namespace lime {
 
 		gPendingIndexed = false;
 		gPendingInstances = (uint32_t)instanceCount;
+		gPendingNumVertices = (uint32_t)count;
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, (uint32_t)instanceCount);
 	}
@@ -8377,6 +8611,9 @@ namespace lime {
 		indexBufferSlots.clear ();
 		constantPools.clear ();
 		gDepthPool.clear ();
+		gMergedIndexCache.clear ();
+		gMergedIndexBytes = 0;
+		gOpenRanges.clear ();
 		framebufferViews.clear ();
 		gFramePasses.clear ();
 		MetalContext::boundTextures.clear ();

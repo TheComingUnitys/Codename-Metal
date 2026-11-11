@@ -11,17 +11,16 @@ Baseline: **56 / 56** stages ship a prebuilt `.metallib` (the cache covers only 
 engine corpus; mod shaders are translated at runtime) (verified by
 `metal/scripts/check-docs.py` and `gen_shader_aot.py --strict`).
 
+
+
 ## Unfinished optimizations (recorded)
 
-- **D38 draw merging - remaining parts** (the contiguous-index fast path is implemented):
-  - merging draws with **non-contiguous index ranges**, or draws in different index buffers,
-    requires a merged-index cache (copy the used ranges into a new buffer and key it by the
-    range list); not implemented because of cache growth, 16/32-bit index mixing and mod
-    geometry risk.
-  - **instance-data batching** requires the GLSL->MSL translator and OpenFL to expose
-    per-instance attributes; it is an OpenFL batching-layer change, not a backend tweak.
-  - The deferred-submit path also means diagnostic paths that record individual draws
-    (`cne_capture`, `CNE_METAL_SHOW_WORLDCORNER`) do not see merged draws.
+- **D38 draw merging - remaining part**: contiguous *and* non-contiguous index ranges (same
+  or different index buffers) are merged through the merged-index cache (bounded to 64
+  ranges and 3M indices per draw; cache capped at 128 entries / 8 MB).  Diagnostics that
+  record individual draws (`cne_capture`, `CNE_METAL_SHOW_WORLDCORNER`) do not see merged
+  draws, and **instance-data batching** still requires the GLSL->MSL translator and OpenFL to
+  expose per-instance attributes (an OpenFL batching-layer change, not a backend tweak).
 
 The remaining work is **multi-day architectural / optional** and is tracked in the
 [roadmap in README.md](../README.MD#11-future-work-roadmap-not-scheduled): Metal-native

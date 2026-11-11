@@ -744,6 +744,9 @@
 		gPendingCount = (uint32_t)count;
 		gPendingIndexRevision = buffer->second.revision;
 		gPendingInstances = 1;
+		gPendingIndexFlags = flags;
+		gPendingIndexBufferId = elementBufferId;
+		gPendingNumVertices = 0;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw (0, BGFX_INVALID_HANDLE, (uint32_t)count, true, 1);
@@ -766,6 +769,7 @@
 		cne_capture::SetArrays ((uint32_t)count);
 		gPendingIndexed = false;
 		gPendingInstances = 1;
+		gPendingNumVertices = (uint32_t)count;
 
 		BindVertexStreams (&it->second);
 		SubmitDraw ((uint32_t)count, BGFX_INVALID_HANDLE, 0, false, 1);

@@ -203,6 +203,10 @@ namespace metal {
 
 	namespace {
 
+		// [cne-merge] FNV-1a over every generic vertex attribute value; read by the draw-merge
+		// key so two draws with different constant attributes never merge.
+		uint64_t genericAttribHash = 1469598103934665603ull;
+
 		int nextObjectId = 1;
 		std::map<int, Object*> objects;
 		std::map<int, std::map<uint8_t, uint8_t>> attributeMaps; // programId -> glLocation -> slot
@@ -867,6 +871,24 @@ namespace metal {
 			highDPI ? ", high-dpi" : "");
 
 		return true;
+	}
+
+	void MetalContext::NoteGenericAttrib (int index, const float* values, bool integer)
+	{
+		auto mix = [](uint64_t h, const void* p, size_t n)
+		{
+			const uint8_t* b = (const uint8_t*)p;
+			for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+			return h;
+		};
+		genericAttribHash = mix (genericAttribHash, &index, sizeof (index));
+		genericAttribHash = mix (genericAttribHash, &integer, sizeof (integer));
+		genericAttribHash = mix (genericAttribHash, values, sizeof (float) * 4);
+	}
+
+	uint64_t MetalContext::GenericAttribHash ()
+	{
+		return genericAttribHash;
 	}
 
 	extern "C" void cne_metal_release_caches ();
