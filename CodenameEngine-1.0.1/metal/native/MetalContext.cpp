@@ -207,7 +207,14 @@ namespace metal {
 		std::map<int, Object*> objects;
 		std::map<int, std::map<uint8_t, uint8_t>> attributeMaps; // programId -> glLocation -> slot
 		std::set<std::string> reported;
-		bool vsyncEnabled = false;
+		// [cne-vsync] Opt-in vertical sync.  Lime's GL wrapper has no swap-interval call on
+		// macOS, so the only lever is bgfx's reset flag; default off keeps the previous
+		// uncapped behaviour.  CNE_METAL_VSYNC=1 paces presentation to the display.
+		bool vsyncEnabled = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_VSYNC");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
 		int windowWidth = 1;
 		int windowHeight = 1;
 		void* sdlWindowRef = nullptr;
@@ -1343,6 +1350,11 @@ namespace metal {
 
 		if (!created) return;
 
+		// Keep the CAMetalLayer's drawable size / contents scale in sync when the window moves
+		// between Retina and non-Retina displays (the initial configure happens once at startup).
+		if (layer != nullptr)
+			cne_mtl_configure_layer (layer, dpiWidth, dpiHeight, cne_mtl_window_scale (sdlWindowRef));
+
 		bgfx::SwapChain swapChain;
 		swapChain.nwh = layer;
 		swapChain.width = (uint32_t)dpiWidth;
@@ -1376,6 +1388,9 @@ namespace metal {
 		state.viewport[3] = drawableHeight;
 
 		if (!created) return;
+
+		if (layer != nullptr)
+			cne_mtl_configure_layer (layer, drawableWidth, drawableHeight, cne_mtl_window_scale (sdlWindowRef));
 
 		bgfx::SwapChain swapChain;
 		swapChain.nwh = layer;

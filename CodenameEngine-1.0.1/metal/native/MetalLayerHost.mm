@@ -147,8 +147,10 @@ extern "C" {
 			if (layerPtr == NULL) return;
 
 			CAMetalLayer* layer = (__bridge CAMetalLayer*)layerPtr;
-			layer.drawableSize = CGSizeMake (width, height);
-			layer.contentsScale = scale > 0.0 ? scale : 1.0;
+			const CGSize newSize = CGSizeMake (width, height);
+			const CGFloat newScale = scale > 0.0 ? scale : 1.0;
+			layer.drawableSize = newSize;
+			layer.contentsScale = newScale;
 			layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 			layer.framebufferOnly = NO;
 
@@ -160,10 +162,19 @@ extern "C" {
 			NSView* view = [layer delegate] ? nil : nil;
 			(void)view;
 
-			std::fprintf (stdout, "[cne-metal] layer drawableSize=%.0fx%.0f scale=%.1f\n",
-				(double)layer.drawableSize.width, (double)layer.drawableSize.height,
-				(double)layer.contentsScale);
-			std::fflush (stdout);
+			// Called again on every swap-chain rebuild (resize / display move), so only log a
+			// change; a Retina<->non-Retina move is exactly the interesting case.
+			static CGSize lastSize = CGSizeMake (-1, -1);
+			static CGFloat lastScale = -1;
+			if (!CGSizeEqualToSize (lastSize, newSize) || lastScale != newScale)
+			{
+				lastSize = newSize;
+				lastScale = newScale;
+				std::fprintf (stdout, "[cne-metal] layer drawableSize=%.0fx%.0f scale=%.1f\n",
+					(double)layer.drawableSize.width, (double)layer.drawableSize.height,
+					(double)layer.contentsScale);
+				std::fflush (stdout);
+			}
 		}
 	}
 

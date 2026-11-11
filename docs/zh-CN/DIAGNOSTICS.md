@@ -127,6 +127,14 @@ classpath）。mod 的 shader 默认不进缓存，运行时首次使用时翻�
 运行时翻译仍会在渲染线程同步调用 `newLibraryWithSource`，表现为进入 mod 状态时的一次性卡顿，
 可用 `CNE_METAL_HITCH=1` 观察。
 
+### 2.8 窗口 / 显示
+
+- `CNE_METAL_VSYNC=1`：用 `BGFX_RESET_VSYNC` 把呈现节奏对齐显示器（默认关闭；macOS 上 Lime
+  没有 swap-interval 接口）。
+- `CNE_METAL_1X=1`：按逻辑（point）分辨率渲染，而不是 Retina drawable 分辨率。
+- 每次重建交换链都会刷新 CAMetalLayer 的 drawableSize 与 `contentsScale`，因此在 Retina 与
+  非 Retina 显示器之间移动窗口仍然 1:1；只有尺寸/比例真正变化时才输出日志。
+
 ## 3. 帧录制与直连 Metal 回放（A/B 原型）
 
 ```sh

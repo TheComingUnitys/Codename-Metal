@@ -133,6 +133,16 @@ shader does not translate or compile it again.  The `[cne-aot] EXIT` line report
 source still calls `newLibraryWithSource` synchronously on the render thread, which is a
 one-off hitch when a mod state is entered; `CNE_METAL_HITCH=1` reports it.
 
+### 2.8 Window / display
+
+- `CNE_METAL_VSYNC=1` - pace presentation with `BGFX_RESET_VSYNC` (default off; Lime has no
+  swap-interval call on macOS).
+- `CNE_METAL_1X=1` - render at logical (point) resolution instead of the Retina drawable
+  resolution.
+- The CAMetalLayer's drawable size and `contentsScale` are refreshed on every swap-chain
+  rebuild, so moving the window between a Retina and a non-Retina display stays 1:1.
+  Layer reconfiguration is logged only when the size/scale actually changes.
+
 ## 3. Frame capture + direct-Metal replay (A/B prototype)
 
 ```sh
