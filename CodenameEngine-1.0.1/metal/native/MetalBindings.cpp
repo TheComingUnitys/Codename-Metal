@@ -480,6 +480,7 @@ namespace lime {
 			int stride = 0;
 			uint32_t offset = 0;
 			int buffer = 0;
+			int divisor = 0;   // 0 = per-vertex, >0 = per-instance (i_dataN)
 		};
 
 		struct VertexArrayData
@@ -559,6 +560,8 @@ namespace lime {
 
 		/** The Haxe GLSL→MSL translator reports attribute slots through this map. */
 		std::unordered_map<int, std::map<uint8_t, uint8_t>> attribSlots;
+		// [cne-instance] glLocation -> bgfx instance data slot (i_dataN) for per-instance attrs.
+		std::unordered_map<int, std::map<uint8_t, int>> instanceAttribs;
 
 		// ---------------------------------------------------------------- helpers
 
@@ -2007,6 +2010,73 @@ namespace lime {
 		}
 
 
+		// [cne-instance] One reusable per-instance vertex buffer (float4 per i_dataN slot).
+		static bgfx::DynamicVertexBufferHandle gInstanceBuffer = bgfx::DynamicVertexBufferHandle ();
+		static int gInstanceBufferSlots = 0;
+		static uint32_t gInstanceBufferCap = 0;
+
+		/// Gathers every divisor>0 attribute of the current VAO into bgfx's instance-data
+		/// layout (i_data0.. slots, float4 each) and binds it.  Returns false when there is
+		/// nothing usable, in which case the draw runs without instance data.
+		static bool SetupInstanceData (VertexArrayData* vao, int numInstances)
+		{
+			if (vao == nullptr || numInstances <= 1) return false;
+			auto iaIt = instanceAttribs.find (MetalContext::state.currentProgram);
+			if (iaIt == instanceAttribs.end () || iaIt->second.empty ()) return false;
+
+			int maxSlot = -1;
+			for (auto& e : iaIt->second) if (e.second > maxSlot) maxSlot = e.second;
+			if (maxSlot < 0) return false;
+			const int slots = maxSlot + 1;
+			const size_t floatsPerInstance = (size_t)slots * 4;
+			std::vector<float> data ((size_t)numInstances * floatsPerInstance, 0.0f);
+
+			int filled = 0;
+			for (auto& e : iaIt->second)
+			{
+				const int glLocation = e.first;
+				const int slot = e.second;
+				auto a = vao->attribs.find ((uint8_t)glLocation);
+				if (a == vao->attribs.end () || !a->second.enabled) continue;
+				if (a->second.size != 4 || a->second.type != GL_FLOAT) continue;
+				auto b = buffers.find (a->second.buffer);
+				if (b == buffers.end ()) continue;
+				const uint32_t stride = a->second.stride > 0 ? (uint32_t)a->second.stride : 16u;
+				const size_t base = (size_t)a->second.offset;
+				if (base + (size_t)(numInstances - 1) * stride + 16 > b->second.bytes.size ()) continue;
+				for (int i = 0; i < numInstances; ++i)
+				{
+					const uint8_t* src = b->second.bytes.data () + base + (size_t)i * stride;
+					std::memcpy (&data[((size_t)i * floatsPerInstance) + (size_t)slot * 4], src, sizeof (float) * 4);
+				}
+				++filled;
+			}
+			if (filled == 0) return false;
+
+			const uint32_t bytes = (uint32_t)(data.size () * sizeof (float));
+			if (!bgfx::isValid (gInstanceBuffer) || gInstanceBufferSlots != slots || gInstanceBufferCap < bytes)
+			{
+				if (bgfx::isValid (gInstanceBuffer)) bgfx::destroy (gInstanceBuffer);
+				bgfx::VertexLayout layout;
+				layout.begin ();
+				for (int i = 0; i < slots; ++i)
+					layout.add ((bgfx::Attrib::Enum)((int)bgfx::Attrib::TexCoord0 + i), 4,
+						bgfx::AttribType::Float);
+				layout.end ();
+				gInstanceBuffer = bgfx::createDynamicVertexBuffer (
+					bgfx::copy (data.data (), bytes), layout);
+				gInstanceBufferSlots = slots;
+				gInstanceBufferCap = bytes;
+				if (!bgfx::isValid (gInstanceBuffer)) return false;
+			}
+			else
+			{
+				bgfx::update (gInstanceBuffer, 0, bgfx::copy (data.data (), bytes));
+			}
+			bgfx::setInstanceDataBuffer (gInstanceBuffer, 0, (uint32_t)numInstances);
+			return true;
+		}
+
 		void BindVertexStreams (VertexArrayData* vao)
 		{
 			if (vao == nullptr) return;
@@ -2106,6 +2176,10 @@ namespace lime {
 			}
 
 			int locations[32];
+			// [cne-instance] divisor>0 attributes are fed through bgfx's instance data buffer;
+			// they are excluded from the per-vertex stream grouping below.
+			SetupInstanceData (vao, (int)gPendingInstances);
+
 			float constants[32 * 4];
 			const int constantCount = CollectConstantAttribs (locations, constants, 32);
 
@@ -2148,6 +2222,7 @@ namespace lime {
 			for (auto& entry : vao->attribs)
 			{
 				if (!entry.second.enabled) continue;
+				if (entry.second.divisor > 0) continue;   // instance data, not a vertex stream
 				byBuffer[entry.second.buffer].push_back ({entry.first, entry.second});
 			}
 
@@ -3458,10 +3533,18 @@ namespace lime {
 		if (val_is_array (attributeMap))
 		{
 			int count = val_array_size (attributeMap) / 2;
+			instanceAttribs[program].clear ();
 			for (int i = 0; i < count; ++i)
 			{
 				int glLocation = val_int (val_array_i (attributeMap, i * 2));
 				int slot = val_int (val_array_i (attributeMap, i * 2 + 1));
+				if (slot < 0)
+				{
+					// [cne-instance] -(1 + i_dataN)
+
+					instanceAttribs[program][(uint8_t)glLocation] = -slot - 1;
+					continue;
+				}
 				attribSlots[program][(uint8_t)glLocation] = (uint8_t)slot;
 			}
 
@@ -3709,6 +3792,7 @@ namespace lime {
 
 		programs.erase (it);
 		attribSlots.erase (program);
+		instanceAttribs.erase (program);
 		MetalContext::Remove (program);
 	}
 

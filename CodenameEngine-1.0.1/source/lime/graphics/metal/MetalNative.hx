@@ -349,6 +349,19 @@ class MetalNative
 		}
 	}
 
+	public static inline function vertexAttribDivisor(gl:Dynamic, index:Int, divisor:Int):Void
+	{
+		if (active("geo")) _vertexAttribDivisor(index, divisor);
+		else gl.vertexAttribDivisor(index, divisor);
+	}
+
+	public static inline function drawElementsInstanced(gl:Dynamic, primitive:Int, count:Int, indexType:Int, byteOffset:Int, instanceCount:Int):Void
+	{
+		if (active("geo")) _drawElementsInstanced(primitive, count, indexType, byteOffset, instanceCount);
+		else gl.drawElementsInstanced(primitiveToGL(primitive), count,
+			indexType == INDEX_UNSIGNED_INT ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, byteOffset, instanceCount);
+	}
+
 	public static inline function vertexAttribCurrent(gl:Dynamic, index:Int, size:Int, type:Int, normalized:Bool, stride:Int, offset:Int):Void
 	{
 		if (active("geo"))
@@ -587,6 +600,8 @@ class MetalNative
 	static var _activeTexture = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_active_texture", "iv", false));
 	static var _bindTexture2D = new cpp.Callable<Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_bind_texture2d", "iv", false));
 	static var _drawIndexed = new cpp.Callable<Int->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_draw_indexed", "iiiiv", false));
+	static var _vertexAttribDivisor = new cpp.Callable<Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_vertex_attrib_divisor", "iiv", false));
+	static var _drawElementsInstanced = new cpp.Callable<Int->Int->Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_draw_elements_instanced", "iiiiiv", false));
 	static var _drawArrays = new cpp.Callable<Int->Int->Int->cpp.Void>(cpp.Prime._loadPrime("lime", "cne_metal_draw_arrays", "iiiv", false));
 	#end
 }

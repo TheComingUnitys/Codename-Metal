@@ -649,8 +649,39 @@ class GLSLToMSL
 		}
 	}
 
+	/**
+		[cne-instance] bgfx Metal feeds per-instance data through the reserved attribute
+		names `i_data0`..`i_data15` (float4 each, step rate 1); the renderer reflects the
+		names from the MSL and binds its instance buffer to them.  A GLSL shader opts in by
+		declaring `attribute vec4 i_dataN;` — those are not part of the per-vertex layout.
+	**/
+	static function instanceSlotOf(name:String):Int
+	{
+		if (!StringTools.startsWith(name, 'i_data')) return -1;
+		var rest = name.substr(6);
+		if (rest.length == 0 || rest.length > 2) return -1;
+		for (i in 0...rest.length) if (rest.charCodeAt(i) < 48 || rest.charCodeAt(i) > 57) return -1;
+		var slot = Std.parseInt(rest);
+		return (slot != null && slot >= 0 && slot < 16) ? slot : -1;
+	}
+
 	function addAttribute(name:String, glslType:String):Void
 	{
+		var instSlot = instanceSlotOf(name);
+		if (instSlot >= 0)
+		{
+			if (glslType != 'vec4') errors.push('Instance attribute must be vec4: ' + name);
+			var loc = 16 + instSlot;
+			for (a in attributes) if (a.index == loc)
+			{
+				errors.push('Instance attribute slot collides with a vertex attribute: ' + name);
+				return;
+			}
+			attributes.push({name: name, mslName: name, index: loc, glslType: 'vec4', mslType: 'float4', count: 4});
+			symbols.set(name, 'xlatIn.' + name);
+			return;
+		}
+
 		var index = attributes.length;
 		if (index >= MAX_ATTRIBUTES)
 		{

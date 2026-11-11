@@ -24,7 +24,7 @@ built and debugged.
 - **Metal 渲染**：所有 2D 渲染经 `lime_gl_*` GL 形状 API 仿真层 → `bgfx` Metal 后端提交；
   进程内没有 GL context，也没有 GL 交换链。
 - **着色器 AOT**：构建期把 GLSL 翻译成 Metal Shading Language 并预编译为 `.metallib`
-  （当前 56 个 stage 全部带预编译库；引擎自带 shader 运行时零 GLSL 翻译；mod shader 不进缓存，运行时翻译）。
+  （当前 59 个 stage 全部带预编译库；引擎自带 shader 运行时零 GLSL 翻译；mod shader 不进缓存，运行时翻译）。
 - **双路径**：Lime 的 `lime_gl_*` CFFI 兼容层 + 更快的原生 `cne_metal_*` 路径（默认启用）。
 - **读回与运行时自检**：`glReadPixels` 已实现（离屏目标走 READ_BACK 纹理 + `bgfx::read`，
   背缓冲走一帧缓存）；`CNE_METAL_SELFTEST=1` 会画一个带 mask 的 OpenFL 精灵并端到端校验
@@ -201,7 +201,7 @@ haxelib run lime build mac
 `apply.sh` 与 `make-universal.sh` 会在每次构建前重新生成：
 
 - 只枚举**原版引擎语料**（OpenFL/Flixel/CNE/外部 classpath + `assets/shaders`）
-  → MSL → `.metallib`（基线：**56 个 stage，56 个预编译库**，全部编译成功；
+  → MSL → `.metallib`（基线：**59 个 stage，59 个预编译库**，全部编译成功；
   `mods/` 下的 shader 默认不进缓存）；
 - **mod shader 在运行时翻译**（本版翻译器已覆盖常见写法）。如果确实想构建期烘焙：
   `CNE_AOT_INCLUDE_MODS=1` 会额外枚举 `mods/**/*.frag|.vert`；
@@ -267,7 +267,7 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
   原型提升、重载参数折叠等规则；
 - `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
   且 `.metallib` 覆盖率不得低于 `metal/audit/aot-expected.json` 中登记的下限
-  （当前 56/56，无允许回退）；
+  （当前 59/59，无允许回退）；
 - `metal/tools/frame_diff.py --selftest`：截图比对工具的自检（纯合成帧，无需 app）；
   真正的像素回归用 `metal/scripts/pixel-regression.sh --app <app> --scenario menu`
   （先 `--update` 生成金帧；金帧与 GPU/驱动相关，见 `metal/autotests/README.md`）；

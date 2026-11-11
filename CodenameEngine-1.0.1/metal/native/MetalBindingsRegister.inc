@@ -359,6 +359,8 @@
 	DEFINE_PRIME1v (cne_metal_active_texture);      // i
 	DEFINE_PRIME1v (cne_metal_bind_texture2d);      // i
 	DEFINE_PRIME4v (cne_metal_draw_indexed);        // i i i i
+	DEFINE_PRIME2v (cne_metal_vertex_attrib_divisor);  // i i
+	DEFINE_PRIME5v (cne_metal_draw_elements_instanced); // i i i i i
 	DEFINE_PRIME3v (cne_metal_draw_arrays);         // i i i
 	DEFINE_PRIME4v (cne_metal_buffer_data);        // i i d i
 	DEFINE_PRIME9v (cne_metal_tex_image_2d);       // i i i i i i i i d

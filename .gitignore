@@ -42,3 +42,5 @@ CodenameEngine-1.0.1/metal/haxe/lime/graphics/metal/ShaderAotCache.hx
 CodenameEngine-1.0.1/source/lime/graphics/metal/ShaderAotCache.hx
 CodenameEngine-1.0.1/metal/audit/aot-coverage.md
 CodenameEngine-1.0.1/metal/audit/aot-coverage.zh.md
+/deps/
+/forks/

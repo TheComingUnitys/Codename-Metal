@@ -29,7 +29,7 @@ documents how it was built and debugged.
 - **Metal rendering**: every 2D draw goes through the `lime_gl_*` GL-shaped compatibility
   layer into bgfx's Metal backend. No GL context and no GL swap chain exist in the process.
 - **Shader AOT**: GLSL is translated to Metal Shading Language at build time and precompiled
-  into `.metallib` files (**56 cached shader stages**, **56 / 56** ship a prebuilt library;
+  into `.metallib` files (**59 cached shader stages**, **59 / 59** ship a prebuilt library;
   zero runtime GLSL translation for the engine corpus).  Mod shaders are translated at
   runtime and are not part of the cache.
 - **Two paths**: the Lime `lime_gl_*` CFFI compatibility layer plus the faster native
@@ -209,7 +209,7 @@ generated and gitignored).  `apply.sh` and `make-universal.sh` regenerate it bef
 build:
 
 - enumerates **only the original engine corpus** (OpenFL/Flixel/CNE/external classpath +
-  `assets/shaders`) -> MSL -> `.metallib` (baseline: **56 stages, 56 prebuilt libraries**,
+  `assets/shaders`) -> MSL -> `.metallib` (baseline: **59 stages, 59 prebuilt libraries**,
   all compiled; nothing from `mods/` is cached);
 - **mod shaders are translated at runtime** on first use (the translator fixes in this
   release cover the common mod idioms).  If you deliberately want a build-time bake:
@@ -266,7 +266,7 @@ Expected output: `OK - Metal backend compiles against bgfx API v168 and Lime`.
 - translator tests: `TestTranslate` (40 checks) + `TestTranslateCompat` (53 checks);
 - `gen_shader_aot.py --check --strict` verifies the committed cache is current and the
   `.metallib` coverage did not regress against `metal/audit/aot-expected.json`
-  (currently 56/56, no allowed fallbacks);
+  (currently 59/59, no allowed fallbacks);
 - `frame_diff.py --selftest` / `profile_check.py --selftest` self tests;
 - `check-docs.py` keeps the numbers in README/METAL-TODO in sync with the cache;
 - CI: `docs/ci/metal-verify.yml` (runs the dependency-free checks on macOS).

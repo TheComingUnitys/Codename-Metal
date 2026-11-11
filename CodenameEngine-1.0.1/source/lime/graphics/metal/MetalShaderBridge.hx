@@ -248,7 +248,18 @@ class MetalShaderBridge
 				}
 
 				attributeMap.push(glLocation);
-				attributeMap.push(attribute.index);
+				// [cne-instance] i_dataN attributes are per-instance attributes fed by
+				// bgfx's instance data buffer; encode them as -(1 + slot) so the native side
+				// does not add them to the per-vertex stream map.
+				if (StringTools.startsWith(attribute.name, "i_data"))
+				{
+					var slot = Std.parseInt(attribute.name.substr(6));
+					attributeMap.push(-(1 + (slot == null ? 0 : slot)));
+				}
+				else
+				{
+					attributeMap.push(attribute.index);
+				}
 			}
 		}
 

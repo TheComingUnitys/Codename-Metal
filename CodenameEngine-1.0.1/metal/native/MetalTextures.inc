@@ -1344,10 +1344,13 @@
 		CNE_COV ("lime_gl_vertex_attrib_divisor");
 		mtl_textures_detail::attribDivisors[index] = divisor;
 
-		// bgfx instancing feeds per-instance data from a separate instance buffer, there is
-		// no per-attribute divisor to set.  The value is mirrored so the engine can inspect
-		// it, but it cannot change the generated draw calls.
-		MetalContext::ReportUnimplemented ("lime_gl_vertex_attrib_divisor (bgfx has no per-attribute divisor)");
+		// [cne-instance] bgfx has no per-attribute divisor; the draw path gathers the
+		// divisor>0 attributes into one instance data buffer and binds it through
+		// bgfx::setInstanceDataBuffer (i_data0.. slots).
+		auto it = vertexArrays.find (MetalContext::state.currentVertexArray);
+		if (it == vertexArrays.end ())
+			it = vertexArrays.emplace (MetalContext::state.currentVertexArray, VertexArrayData ()).first;
+		it->second.attribs[(uint8_t)index].divisor = divisor;
 	}
 
 	//@impl lime_gl_vertex_attrib1f

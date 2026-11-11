@@ -704,6 +704,22 @@
 		NoteBoundTexture (unit, texture);
 	}
 
+	//@impl cne_metal_vertex_attrib_divisor
+	void cne_metal_vertex_attrib_divisor (int index, int divisor)
+	{
+		// [cne-instance] divisor>0 attributes are gathered into bgfx's instance data buffer
+		// by BindVertexStreams; the value itself is recorded per VAO attribute.
+		lime_gl_vertex_attrib_divisor (index, divisor);
+	}
+
+	//@impl cne_metal_draw_elements_instanced
+	void cne_metal_draw_elements_instanced (int primitive, int count, int indexType, int byteOffset, int instanceCount)
+	{
+		(void)primitive;
+		const int glType = (indexType == 0 /* INDEX_UNSIGNED_SHORT */) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+		lime_gl_draw_elements_instanced (GL_TRIANGLES, count, glType, (double)byteOffset, instanceCount);
+	}
+
 	//@impl cne_metal_draw_indexed
 	void cne_metal_draw_indexed (int primitive, int count, int indexType, int byteOffset)
 	{
