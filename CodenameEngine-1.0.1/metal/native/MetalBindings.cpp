@@ -387,7 +387,11 @@ namespace lime {
 			std::vector<uint8_t> pixels;
 			bgfx::TextureHandle handle = BGFX_INVALID_HANDLE;
 			bool hasData = false;
-			bool isRenderTarget = false;   // created with BGFX_TEXTURE_RT
+			bool isRenderTarget = false;   // this texture is used as a render-target attachment
+			// True when the live bgfx handle was created with BGFX_TEXTURE_RT.  Data textures are
+			// created without the RT flag so their per-frame uploads can use updateTexture2D;
+			// they are re-created as RT exactly once if glFramebufferTexture2D attaches them.
+			bool handleIsRt = false;
 			// True when at least one draw into this render target was Y-mirrored by the
 			// fboFlip compensation.  Sampling then needs no additional V flip; a target whose
 			// content was rendered without the mirror (a pass that itself samples a render
@@ -406,6 +410,8 @@ namespace lime {
 			int magFilter = 0x2601;
 			int wrapS = 0x812F;       // GL_CLAMP_TO_EDGE
 			int wrapT = 0x812F;
+			// [cne-fastpath] ToBgfxSampler(texture) cached; updated by texParameteri/creation.
+			uint32_t samplerFlags = 0;
 		};
 
 		struct FramebufferData
@@ -3379,7 +3385,7 @@ namespace lime {
 						continue;
 					}
 
-					const uint32_t samplerFlags = ToBgfxSampler (texture->second);
+					const uint32_t samplerFlags = texture->second.samplerFlags;
 					const uint32_t key = (uint32_t)texture->second.handle.idx * 2654435761u
 						^ samplerFlags ^ ((uint32_t)uniform.textureUnit + 1u) * 2246822519u;
 					if (!uploadAllSamplers && program->samplerKeys[i] == key) continue;
@@ -7057,9 +7063,29 @@ namespace lime {
 			}
 		}
 
-		bgfx::updateTexture2D (texture->handle, 0, (uint8_t)level, (uint16_t)xoffset, (uint16_t)yoffset,
-			(uint16_t)width, (uint16_t)height,
-			bgfx::copy (source, (uint32_t)(width * height * bpp)));
+		if (!texture->handleIsRt)
+		{
+			bgfx::updateTexture2D (texture->handle, 0, (uint8_t)level, (uint16_t)xoffset, (uint16_t)yoffset,
+				(uint16_t)width, (uint16_t)height,
+				bgfx::copy (source, (uint32_t)(width * height * bpp)));
+		}
+		else
+		{
+			// A promoted render target cannot be updated in place; rebuild it from the CPU
+			// mirror (already updated above) so glyph atlases and similar sub-image streams
+			// still reach the GPU.
+			InvalidateFramebuffersForTexture (CurrentTextureId ());
+			bgfx::destroy (texture->handle);
+			texture->handle = BGFX_INVALID_HANDLE;
+			if (texture->width > 0 && texture->height > 0 && texture->bgfxFormat != bgfx::TextureFormat::Count)
+			{
+				const bgfx::Memory* mirrorData = texture->pixels.empty ()
+					? nullptr
+					: bgfx::copy (texture->pixels.data (), (uint32_t)texture->pixels.size ());
+				texture->handle = bgfx::createTexture2D ((uint16_t)texture->width, (uint16_t)texture->height,
+					false, 1, texture->bgfxFormat, BGFX_TEXTURE_RT | BGFX_TEXTURE_NONE, mirrorData);
+			}
+		}
 	}
 
 	//@impl lime_gl_generate_mipmap
@@ -7135,6 +7161,34 @@ namespace lime {
 		CNE_COV ("lime_gl_framebuffer_texture2D");
 		auto it = framebuffers.find (MetalContext::state.currentFramebuffer);
 		if (it == framebuffers.end ()) return;
+
+		// [cne-rt] bgfx cannot add BGFX_TEXTURE_RT to an existing texture, so promote a data
+		// texture to a render target exactly once when GL attaches it.  Everything uploaded to
+		// it so far is in the CPU mirror, so the handle is re-created with that data.
+		if (texture != 0)
+		{
+			auto promoted = textures.find (texture);
+			if (promoted != textures.end () && !promoted->second.handleIsRt
+			&&  promoted->second.width > 0 && promoted->second.height > 0)
+			{
+				TextureData& t = promoted->second;
+				InvalidateFramebuffersForTexture (texture);
+				if (bgfx::isValid (t.handle)) bgfx::destroy (t.handle);
+				if (t.bgfxFormat == bgfx::TextureFormat::Count) t.bgfxFormat = bgfx::TextureFormat::RGBA8;
+				const bgfx::Memory* data = nullptr;
+				if (!t.pixels.empty ()) data = bgfx::copy (t.pixels.data (), (uint32_t)t.pixels.size ());
+				t.handle = bgfx::createTexture2D ((uint16_t)t.width, (uint16_t)t.height, false, 1,
+					t.bgfxFormat, BGFX_TEXTURE_RT | BGFX_TEXTURE_NONE, data);
+				if (bgfx::isValid (t.handle))
+				{
+					t.handleIsRt = true;
+					t.isRenderTarget = true;
+					t.handleWidth = t.width;
+					t.handleHeight = t.height;
+					t.handleFormat = (uint64_t)t.bgfxFormat;
+				}
+			}
+		}
 
 		// Ping-pong render targets re-attach a different colour texture to the same
 		// framebuffer as the passes alternate.  The bgfx framebuffer caches its attachment

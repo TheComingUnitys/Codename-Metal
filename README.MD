@@ -308,8 +308,10 @@ Expected output: `OK - Metal backend compiles against bgfx API v168 and Lime`.
    `CNE_METAL_DRAWPROBE/UVLOG`; details in `docs/zh-CN/metal/README.md`).
 5. **FBO cache**: bgfx framebuffers are cached per (GL FBO, attachment texture) to support GL
    ping-pong semantics; re-uploading a texture invalidates the dependent FBOs.
-6. **Performance**: O(1) vertex/index buffer caching keyed by revision; same-size texture
-   re-uploads use `updateTexture2D`; hot-path containers are reused.
+6. **Performance**: O(1) vertex/index buffer caching keyed by revision; data textures are
+   created without `BGFX_TEXTURE_RT` so same-size re-uploads stream through
+   `updateTexture2D` (video/animated textures), and a texture is promoted to a render target
+   once when `glFramebufferTexture2D` attaches it; hot-path containers are reused.
 7. **Window size & letterboxing**: the default window is 1600x900 (16:9), clamped to the
    screen's usable area while keeping the 16:9 ratio (an oversized request made macOS clamp the
    width only, leaving a taller frame and letterbox bands); macOS window-frame restoration is

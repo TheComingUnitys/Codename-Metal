@@ -804,7 +804,11 @@
 		// image).  Expansion also gives them the RGBA8 texture format bgfx can sample.
 		int uploadFormat = format;
 		const uint8_t* source = PointerFromDouble (data);
-		std::vector<uint8_t> expanded;
+		// Reused expansion buffer: a streaming narrow-format texture used to allocate a new
+		// vector on every upload.
+		static std::vector<uint8_t> expandedScratch;
+		std::vector<uint8_t>& expanded = expandedScratch;
+		expanded.clear ();
 
 		if (FormatNeedsRgbaExpansion (format, type))
 		{
@@ -846,30 +850,32 @@
 			(bgfx::TextureFormat::Enum)ToBgfxFormat (internalformat, uploadFormat, type);
 		texture->bgfxFormat = bgfxFmt;
 
-		// A texture created with no pixel data is a render target: OpenFL allocates offscreen
-		// surfaces exactly this way (glTexImage2D(..., null)) and then attaches them with
-		// glFramebufferTexture2D.  bgfx refuses such an attachment unless the texture was
-		// created with BGFX_TEXTURE_RT, and the flag cannot be added later.
-		// OFF by default: bgfx::updateTexture2D is not valid for the textures this backend
-		// creates (they are allocated with BGFX_TEXTURE_RT so they can later be attached to
-		// a framebuffer), and calling it silently blanked every texture - the whole game
-		// rendered black.  Re-creating the handle is the correct behaviour; the option is
-		// kept for experiments only.
-		static const bool texUpdateEnabled = [] ()
-		{
-			const char* v = std::getenv ("CNE_METAL_TEX_UPDATE");
-			return v != nullptr && v[0] == '1';
-		} ();
-		const bool sameHandle = texUpdateEnabled
-			&& bgfx::isValid (texture->handle)
+		// Data textures are created *without* BGFX_TEXTURE_RT so a same-size re-upload can use
+		// bgfx::updateTexture2D in place (video frames, animated textures, text atlases).  The
+		// RT flag cannot be added later, so glFramebufferTexture2D promotes an attached texture
+		// once (see lime_gl_framebuffer_texture2D).  Only textures already promoted to RT are
+		// re-created here; for those update is invalid and the handle has to be replaced.
+		const bool sameSize = bgfx::isValid (texture->handle)
 			&& texture->handleWidth == width
 			&& texture->handleHeight == height
 			&& texture->handleFormat == (uint64_t)bgfxFmt;
 
-		if (!sameHandle)
+		if (sameSize && !texture->handleIsRt && source != nullptr && needed > 0)
 		{
-			// The handle is about to be re-created: framebuffers attached to this texture still
-			// point at the old handle (see InvalidateFramebuffersForTexture).
+			// Same size/format streaming texture: upload in place.  No FBO is attached (the
+			// texture is not an RT), so nothing has to be invalidated.
+			bgfx::updateTexture2D (texture->handle, 0, 0, 0, 0, (uint16_t)width, (uint16_t)height,
+				bgfx::copy (texture->pixels.data (), (uint32_t)texture->pixels.size ()),
+				(uint16_t)rowBytes);
+		}
+		else if (sameSize && texture->handleIsRt && source == nullptr)
+		{
+			// Re-allocating an existing RT without data: the handle stays, content is cleared
+			// by the render-target clear.
+		}
+		else
+		{
+			// Re-create: size/format change, a promoted RT receiving data, or first upload.
 			InvalidateFramebuffersForTexture (CurrentTextureId ());
 
 			if (bgfx::isValid (texture->handle))
@@ -880,22 +886,23 @@
 
 			if (width > 0 && height > 0)
 			{
+				const uint16_t flags = texture->handleIsRt
+					? (uint16_t)(BGFX_TEXTURE_RT | BGFX_TEXTURE_NONE)
+					: (uint16_t)BGFX_TEXTURE_NONE;
+				const bgfx::Memory* data = nullptr;
+				if (source != nullptr && !texture->pixels.empty ())
+				{
+					data = bgfx::copy (texture->pixels.data (), (uint32_t)texture->pixels.size ());
+				}
 				texture->handle = bgfx::createTexture2D ((uint16_t)width, (uint16_t)height, false, 1,
-					bgfxFmt, BGFX_TEXTURE_RT | BGFX_TEXTURE_NONE,
-					bgfx::copy (texture->pixels.data (), (uint32_t)texture->pixels.size ()));
+					bgfxFmt, flags, data);
 				texture->handleWidth = width;
 				texture->handleHeight = height;
 				texture->handleFormat = (uint64_t)bgfxFmt;
 			}
 		}
-		else if (source != nullptr && needed > 0)
-		{
-			// Same size/format: stream the new pixels into the existing texture instead of
-			// destroying and recreating it (this is what video/animated textures do per frame).
-			bgfx::updateTexture2D (texture->handle, 0, 0, 0, 0, (uint16_t)width, (uint16_t)height,
-				bgfx::copy (texture->pixels.data (), (uint32_t)texture->pixels.size ()),
-				(uint16_t)rowBytes);
-		}
+
+		texture->samplerFlags = ToBgfxSampler (*texture);
 
 		if (DebugEnabled ())
 		{
@@ -947,8 +954,9 @@
 			case 0x2800: texture->magFilter = param; break;   // GL_TEXTURE_MAG_FILTER
 			case 0x2802: texture->wrapS = param; break;       // GL_TEXTURE_WRAP_S
 			case 0x2803: texture->wrapT = param; break;       // GL_TEXTURE_WRAP_T
-			default: break;
+			default: return;
 		}
+		texture->samplerFlags = ToBgfxSampler (*texture);
 	}
 
 	//@impl cne_metal_create_buffer

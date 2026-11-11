@@ -311,8 +311,9 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
    `CodenameEngine-1.0.1/metal/README.md`。
 5. **FBO 缓存**：按 (GL FBO, 附件纹理) 组合缓存 bgfx FrameBuffer，支持 GL 的 ping-pong 语义；
    纹理重传时自动失效关联 FBO。
-6. **性能**：索引/顶点缓冲使用 revision 键做 O(1) 缓存；纹理同尺寸重传走 `updateTexture2D` 原地更新；
-   热路径容器复用。
+6. **性能**：索引/顶点缓冲使用 revision 键做 O(1) 缓存；数据纹理默认不带 `BGFX_TEXTURE_RT`，
+   同尺寸重传走 `updateTexture2D` 原地更新（视频/动态贴图）；被 `glFramebufferTexture2D` 挂到 FBO
+   时一次性提升为 RT；热路径容器复用。
 7. **窗口大小与黑边**：默认窗口为 1600x900（16:9），启动时会按屏幕可用区域等比缩小（保持 16:9；
    否则 macOS 只夹紧宽度、留下更高的窗口，产生上下黑边），并关闭 macOS 的窗口 frame 恢复。引擎本身不调用 `glClear`，而 bgfx 只清除 view rect，因此后端现在每帧清除**整个**
    backbuffer，并用 view scissor 把实际绘制裁到游戏视口；否则窗口不是 16:9 时，上下黑边里会残留
