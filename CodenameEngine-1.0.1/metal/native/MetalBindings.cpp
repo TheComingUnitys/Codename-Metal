@@ -278,7 +278,7 @@ namespace lime {
 		{
 			uint16_t view = 0;
 			int target = 0;
-			std::set<int> samplesTargets;
+			std::vector<int> samplesTargets;   // small list (1-4); avoids a std::set per draw
 		};
 		static std::vector<FramePass> gFramePasses;
 		// [cne-clear] view 199 clears the whole backbuffer once per frame (letterbox bands).
@@ -4202,7 +4202,8 @@ namespace lime {
 
 				for (size_t j = 0; j < i; ++j)
 				{
-					if (gFramePasses[i].samplesTargets.count (gFramePasses[j].target) != 0)
+					const auto& st = gFramePasses[i].samplesTargets;
+					if (std::find (st.begin (), st.end (), gFramePasses[j].target) != st.end ())
 					{
 						place (j);
 					}
@@ -5236,6 +5237,24 @@ namespace lime {
 						t.pixels.clear ();
 						t.pixels.shrink_to_fit ();
 					}
+
+					// [cne-fbo] Drop framebuffer attachment entries whose texture no longer exists
+					// (streaming/re-created textures used to leave retired handles in the cache).
+					for (auto& fb : framebuffers)
+					{
+						for (auto h = fb.second.attachmentHandles.begin (); h != fb.second.attachmentHandles.end (); )
+						{
+							if (textures.find (h->first) != textures.end ()) { ++h; continue; }
+							if (bgfx::isValid (h->second)) bgfx::destroy (h->second);
+							h = fb.second.attachmentHandles.erase (h);
+						}
+						for (auto d = fb.second.attachmentDepths.begin (); d != fb.second.attachmentDepths.end (); )
+						{
+							if (textures.find (d->first) != textures.end ()) { ++d; continue; }
+							if (bgfx::isValid (d->second)) bgfx::destroy (d->second);
+							d = fb.second.attachmentDepths.erase (d);
+						}
+					}
 				}
 
 				// Clear the whole backbuffer once per frame *before* any pass is submitted.
@@ -5248,7 +5267,11 @@ namespace lime {
 					if (v == nullptr) return true;
 					return !(v[0] == '0' && v[1] == '\0');
 				} ();
-				if (fullBufferClear)
+				// Only the letterbox bands can keep stale pixels; when the game viewport already
+				// covers the whole backbuffer the composite overwrites every pixel each frame.
+				const bool letterboxed = MetalContext::state.viewport[2] != MetalContext::state.backbufferWidth
+					|| MetalContext::state.viewport[3] != MetalContext::state.backbufferHeight;
+				if (fullBufferClear && letterboxed)
 				{
 					bgfx::setViewRect (199, 0, 0,
 						(uint16_t)MetalContext::state.backbufferWidth,
@@ -5418,7 +5441,11 @@ namespace lime {
 			int x = -1, y = -1, w = -1, h = -1;
 			int sx = -1, sy = -1, sw = -1, sh = -1;
 			bool scOn = false;
+			uint64_t clearKey = ~0ull;   // flags/color/depth/stencil signature
 		};
+		// [cne-fastpath] bumped whenever a non-ConfigureView setViewClear call changes a view's
+		// clear state, so the cached clear key is invalidated.
+		static uint64_t gClearStateGeneration = 1;
 		static ViewRectCache gViewRectCache[256];
 		inline void CachedViewRect (uint16_t view, int target, int x, int y, int w, int h)
 		{
@@ -5428,6 +5455,18 @@ namespace lime {
 			c.x = x; c.y = y; c.w = w; c.h = h;
 			bgfx::setViewRect (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
 		}
+		inline void CachedViewClear (uint16_t view, int target, uint16_t flags, uint32_t color, float depth, uint8_t stencil)
+		{
+			ViewRectCache& c = gViewRectCache[view];
+			if (c.target != target) c.clearKey = ~0ull;
+			const uint64_t key = ((uint64_t)flags << 48) ^ ((uint64_t)color << 16)
+				^ (uint64_t)(uint32_t)(depth * 1000.0f) ^ ((uint64_t)stencil << 8)
+				^ (gClearStateGeneration << 56);
+			if (key == c.clearKey) return;
+			c.clearKey = key;
+			bgfx::setViewClear (view, flags, color, depth, stencil);
+		}
+
 		inline void CachedViewScissor (uint16_t view, int target, bool on, int x, int y, int w, int h)
 		{
 			ViewRectCache& c = gViewRectCache[view];
@@ -5537,7 +5576,7 @@ namespace lime {
 				const uint16_t clearFlags = rtTransparentClear
 					? (BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL)
 					: (BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL);
-				bgfx::setViewClear (view, clearFlags, 0x00000000, 1.0f, 0);
+				CachedViewClear (view, MetalContext::state.currentFramebuffer, clearFlags, 0x00000000, 1.0f, 0);
 			}
 
 			const int targetW = CurrentTargetWidth ();
@@ -6087,7 +6126,9 @@ namespace lime {
 					{
 						if (fb.second.texture == sampled)
 						{
-							gFramePasses.back ().samplesTargets.insert (fb.first);
+							auto& samples = gFramePasses.back ().samplesTargets;
+							if (std::find (samples.begin (), samples.end (), fb.first) == samples.end ())
+								samples.push_back (fb.first);
 							break;
 						}
 					}
@@ -6153,6 +6194,7 @@ namespace lime {
 					uint16_t flags = BGFX_CLEAR_COLOR;
 					if (MetalContext::state.depthTest || MetalContext::state.depthWrite) flags |= BGFX_CLEAR_DEPTH;
 					bgfx::setViewClear (view, flags, 0x00000000, 1.0f, 0);
+					++gClearStateGeneration;
 				}
 			}
 
@@ -7662,6 +7704,7 @@ namespace lime {
 		const uint16_t view = ActiveViewForTarget ();
 		ConfigureView (view);
 		bgfx::setViewClear (view, flags, rgba, MetalContext::state.clearDepth, (uint8_t)MetalContext::state.clearStencil);
+		++gClearStateGeneration;
 	}
 
 	// ==================================================================== queries / misc

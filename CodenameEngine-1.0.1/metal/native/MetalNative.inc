@@ -301,6 +301,7 @@
 		const uint16_t view = ActiveViewForTarget ();
 		ConfigureView (view);
 		bgfx::setViewClear (view, flags, rgba, MetalContext::state.clearDepth, (uint8_t)MetalContext::state.clearStencil);
+		++gClearStateGeneration;
 	}
 
 	//@impl cne_metal_present
