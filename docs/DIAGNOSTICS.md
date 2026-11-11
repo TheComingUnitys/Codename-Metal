@@ -165,12 +165,12 @@ They are still **recorded in `MetalContext::state` and warned about once**
 
 | GL state | Reason / current behaviour |
 | --- | --- |
-| `glBlendColor` | bgfx v167 has no blend-colour setter; constant factors fall back |
+| `glBlendColor` | bgfx v168 has no blend-colour setter; constant factors fall back |
 | `glDepthRange` | no depth-range parameter; fixed [0,1] |
 | `glPolygonOffset` | no depth-bias state |
 | `glLineWidth` (>1) | Metal/bgfx rasterise 1px lines |
 | MSAA / `glSampleCoverage` | MSAA disabled, coverage always full |
-| nested-mask stencil write-mask | bgfx v167 stencil word has no write-mask field |
+| nested-mask stencil write-mask | bgfx v168 stencil word has no write-mask field |
 | unknown client pixel format | falls back to RGBA8 / 4 B/px with a warning (narrow formats are expanded) |
 | offscreen view id > 199/frame | reuses view 199 and warns once |
 

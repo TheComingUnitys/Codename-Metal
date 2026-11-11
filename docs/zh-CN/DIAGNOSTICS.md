@@ -163,12 +163,12 @@ python3 ./metal/tools/native_replay/diff.py /tmp/cne-shot/frame.raw /tmp/replay.
 
 | GL 状态 | 原因 / 当前行为 |
 | --- | --- |
-| `glBlendColor` | bgfx v167 无 blend-colour setter；常量混合因子回退为普通因子 |
+| `glBlendColor` | bgfx v168 无 blend-colour setter；常量混合因子回退为普通因子 |
 | `glDepthRange` | bgfx 无 depth-range 参数；固定 [0,1] |
 | `glPolygonOffset` | bgfx 状态无 depth-bias 项 |
 | `glLineWidth` (>1) | Metal/bgfx 只栅格化 1px 线 |
 | MSAA / `glSampleCoverage` | 未启用 MSAA，覆盖恒满 |
-| 嵌套 mask 的 stencil write-mask | bgfx v167 的 stencil 字没有 write-mask 字段 |
+| 嵌套 mask 的 stencil write-mask | bgfx v168 的 stencil 字没有 write-mask 字段 |
 | 未知 client 像素格式 | 回退 RGBA8 / 4 B/px 并告警（窄格式已展开） |
 | 离屏 view id > 199/帧 | 复用 view 199 并告警一次 |
 

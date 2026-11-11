@@ -7236,7 +7236,7 @@ namespace lime {
 		// instead of silently ignoring the call (decision recorded in docs/METAL-TODO.md).
 		if (r != 0.f || g != 0.f || b != 0.f || a != 0.f)
 		{
-			MetalContext::ReportUnimplemented ("lime_gl_blend_color (bgfx v167 exposes no blend-colour setter; constant blend factors fall back to the normal factors)");
+			MetalContext::ReportUnimplemented ("lime_gl_blend_color (bgfx v168 exposes no blend-colour setter; constant blend factors fall back to the normal factors)");
 		}
 	}
 

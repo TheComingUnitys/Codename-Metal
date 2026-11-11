@@ -72,7 +72,7 @@ Codename-Metal/
 - 系统：macOS 26.6.2 (Apple Silicon / M3)，`MACOSX_DEPLOYMENT_TARGET=11.0`
 - Haxe **4.3.7**，hxcpp **4.3.2**
 - Lime **8.3.2**（dev 检出）+ 本仓库补丁（见 §5.3）
-- bgfx API **v167**（Metal 后端，静态库）
+- bgfx API **v168**（Metal 后端，静态库；快照：bgfx `f5ce45e`、bx `57548da`、bimg `77bebb2`，2026-11-10）
 - 通过：主菜单、Cutscene、选谱、Dusttale 全流程、Winter Horrorland、暂停菜单；
   运行时 `newLibraryWithSource=0`、`sourceCompile=0`（着色器全部走 metallib）。
 
@@ -252,7 +252,7 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
   --out /tmp/obj-check
 ```
 
-输出应为 `OK - Metal backend compiles against bgfx API v167 and Lime`。
+输出应为 `OK - Metal backend compiles against bgfx API v168 and Lime`。
 
 ### 7.1 一键验证（无需构建 app）
 

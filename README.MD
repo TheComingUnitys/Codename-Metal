@@ -83,10 +83,11 @@ Codename-Metal/
 - OS: macOS 26.6.2 (Apple Silicon / M3), `MACOSX_DEPLOYMENT_TARGET=11.0`
 - Haxe **4.3.7**, hxcpp **4.3.2**
 - Lime **8.3.2** (dev checkout) + this repository's patches (section 5.3)
-- bgfx API **v167** (Metal backend, static libraries)
+- bgfx API **v168** (Metal backend, static libraries; snapshot: bgfx `f5ce45e`, bx `57548da`, bimg `77bebb2`, 2026-11-10)
 - Passing: main menu, cutscenes, freeplay, the full Dusttale flow, Winter Horrorland,
-  pause menu; at runtime `newLibraryWithSource=0` and `sourceCompile=0` (all shaders
-  come from prebuilt metallibs).
+  pause menu; the original-engine shader corpus is fully prebuilt (`sourceCompile=0` for it),
+  while mod shaders are translated at runtime on first use (the AOT cache intentionally
+  contains only the original engine corpus).
 
 ---
 
@@ -252,7 +253,7 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/   # hxcpp does not trac
   --out /tmp/obj-check
 ```
 
-Expected output: `OK - Metal backend compiles against bgfx API v167 and Lime`.
+Expected output: `OK - Metal backend compiles against bgfx API v168 and Lime`.
 
 ### 7.1 One-shot verification (no app build)
 
