@@ -4310,9 +4310,12 @@ namespace lime {
 				}
 			}
 
-			static bgfx::ViewId execOrder[256];
+			// Offscreen views may overflow into 251.. (C31), so the order array must cover the
+			// whole bgfx view range.
+			static bgfx::ViewId execOrder[8192];
 			size_t at = 0;
-			bool used[256] = { false };
+			bool used[8192] = { false };
+			int maxView = 199;
 			// View 199 is the backbuffer clear (submitted with touch(), so it has no draw pass
 			// and would otherwise land after the screen views and clear the finished frame).
 			execOrder[at++] = 199;
@@ -4320,9 +4323,9 @@ namespace lime {
 			for (size_t idx : order)
 			{
 				const bgfx::ViewId v = gFramePasses[idx].view;
-				if (v < 256 && !used[v]) { used[v] = true; execOrder[at++] = v; }
+				if (v < 8192 && !used[v]) { used[v] = true; execOrder[at++] = v; if ((int)v > maxView) maxView = (int)v; }
 			}
-			for (int v = 0; v < 256 && at < 256; ++v)
+			for (int v = 0; v <= maxView && at < 8192; ++v)
 			{
 				if (!used[v]) execOrder[at++] = (bgfx::ViewId)v;
 			}
@@ -4369,7 +4372,7 @@ namespace lime {
 						lastLoggedFrame = metal::gFrameIndex;
 						auto positionOf = [&] (bgfx::ViewId id) -> int
 						{
-							for (int i = 0; i < 256; ++i) if (execOrder[i] == id) return i;
+							for (int i = 0; i < 8192; ++i) if (execOrder[i] == id) return i;
 							return -1;
 						};
 						std::fprintf (stderr, "[cne-vieworder] f=%u passes:", metal::gFrameIndex);
@@ -5102,10 +5105,21 @@ namespace lime {
 		static int gActiveViewAttachment = -2147483647;
 		static uint32_t gViewEpoch = 0xFFFFFFFFu;
 
+		// [cne-fastpath] C28: reuse the most recent screen view while the viewport/scissor key
+		// is unchanged (screen passes are forced to the end in submission order, so this does
+		// not reorder visible output).  C31: offscreen views overflow into 251+ when a frame has
+		// more than 199 distinct (fbo, attachment) pairs instead of aliasing view 198.
+		static uint16_t gLastScreenView = 0;
+		static bool gLastScreenKeyValid = false;
+		static int gLastScreenKey[10] = {0};
+		static uint32_t gOverflowView = 0;
 		inline void ResetViewAllocation ()
 		{
 			gNextFboView = 0;
 			gNextScreenView = 250;
+			gLastScreenView = 0;
+			gLastScreenKeyValid = false;
+			gOverflowView = 0;
 			gActiveView = 0;
 			gActiveViewTarget = -2147483647;
 			gActiveViewAttachment = -2147483647;
@@ -5342,31 +5356,61 @@ namespace lime {
 			{
 				if (target == 0)
 				{
-					gActiveView = gNextScreenView;
-					// Views 201..250 for the screen; 199 is the backbuffer-clear view.
-					if (gNextScreenView > 201) --gNextScreenView;
+					int key[10] = { MetalContext::state.viewport[0], MetalContext::state.viewport[1],
+						MetalContext::state.viewport[2], MetalContext::state.viewport[3],
+						MetalContext::state.scissorEnabled ? 1 : 0,
+						MetalContext::state.scissor[0], MetalContext::state.scissor[1],
+						MetalContext::state.scissor[2], MetalContext::state.scissor[3], 0 };
+					bool sameKey = gLastScreenKeyValid && gLastScreenView != 0;
+					if (sameKey)
+					{
+						for (int k = 0; k < 10; ++k) if (key[k] != gLastScreenKey[k]) { sameKey = false; break; }
+					}
+					if (sameKey)
+					{
+						gActiveView = gLastScreenView;
+					}
+					else
+					{
+						gActiveView = gNextScreenView;
+						// Views 201..250 for the screen; 199 is the backbuffer-clear view.
+						if (gNextScreenView > 201) --gNextScreenView;
+						gLastScreenView = gActiveView;
+						for (int k = 0; k < 10; ++k) gLastScreenKey[k] = key[k];
+						gLastScreenKeyValid = true;
+					}
 				}
 				else
 				{
 					EnsureFramebufferFast (target);
 
-					// View ids 0..199 are reserved for offscreen passes and 250+ for the screen.
-					// Frame recordings with more than 200 distinct (fbo, attachment) pairs are
-					// pathological, but silently reusing an id makes the failure hard to see, so
-					// say it once.
-					if (gNextFboView >= 198)
+					// View ids 0..198 are offscreen, 199 clears the backbuffer, 201..250 are the
+					// screen.  A pathological frame with more targets overflows into 251+ instead
+					// of aliasing view 198 (which rendered two targets into one view).
+					if (gNextFboView <= 198)
 					{
-						static bool warnedViewLimit = false;
-						if (!warnedViewLimit)
+						gActiveView = (uint16_t)gNextFboView;
+						++gNextFboView;
+					}
+					else
+					{
+						if (gOverflowView == 0) gOverflowView = 251;
+						if (gOverflowView > 8190)
 						{
-							warnedViewLimit = true;
-							std::fprintf (stderr, "[cne-view] offscreen view limit (198/frame) reached; further targets reuse view 198\n");
-							std::fflush (stderr);
+							static bool warnedViewLimit = false;
+							if (!warnedViewLimit)
+							{
+								warnedViewLimit = true;
+								std::fprintf (stderr, "[cne-view] offscreen view overflow exhausted; reusing view 8190\n");
+								std::fflush (stderr);
+							}
+							gActiveView = 8190;
+						}
+						else
+						{
+							gActiveView = (uint16_t)gOverflowView++;
 						}
 					}
-
-					gActiveView = gNextFboView;
-					if (gNextFboView < 199) ++gNextFboView;
 				}
 				gActiveViewTarget = target;
 				gActiveViewAttachment = attachment;
@@ -5489,7 +5533,7 @@ namespace lime {
 		// [cne-fastpath] bumped whenever a non-ConfigureView setViewClear call changes a view's
 		// clear state, so the cached clear key is invalidated.
 		static uint64_t gClearStateGeneration = 1;
-		static ViewRectCache gViewRectCache[256];
+		static ViewRectCache gViewRectCache[8192];   // view ids may overflow past 255 (C31)
 		inline void CachedViewRect (uint16_t view, int target, int x, int y, int w, int h)
 		{
 			ViewRectCache& c = gViewRectCache[view];
