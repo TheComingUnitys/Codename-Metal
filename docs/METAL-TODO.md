@@ -19,8 +19,10 @@ engine corpus; mod shaders are translated at runtime) (verified by
   or different index buffers) are merged through the merged-index cache (bounded to 64
   ranges and 3M indices per draw; cache capped at 128 entries / 8 MB).  Diagnostics that
   record individual draws (`cne_capture`, `CNE_METAL_SHOW_WORLDCORNER`) do not see merged
-  draws, and **instance-data batching** still requires the GLSL->MSL translator and OpenFL to
-  expose per-instance attributes (an OpenFL batching-layer change, not a backend tweak).
+  draws.  Backend-side instancing support is now in place: GLSL `gl_InstanceID` and
+  `gl_VertexID` translate to Metal's `[[instance_id]]` / `[[vertex_id]]`, and
+  `glDraw*Instanced` already forwards the instance count.  True per-instance-attribute
+  batching still needs OpenFL/Flixel to emit instance data from its batching layer.
 
 The remaining work is **multi-day architectural / optional** and is tracked in the
 [roadmap in README.md](../README.MD#11-future-work-roadmap-not-scheduled): Metal-native

@@ -56,6 +56,7 @@ class TestTranslate
 		testGraphicsShader();
 		testMaskShader();
 		testEngineCustomShader();
+		testInstancedBuiltins();
 		testPreprocessor();
 
 		Sys.println('');
@@ -199,6 +200,28 @@ void main(void) {
 		check('graphics: no errors', rf.errors.length == 0, rf.errors.join('; '));
 		check('graphics: sampler named s_bitmap', rf.samplers.length == 1 && rf.samplers[0].mslName == 's_bitmap');
 		check('graphics: sample call rewritten', has(rf.code, 's_bitmap.sample(s_bitmapSampler, uv'));
+		Sys.println('');
+	}
+
+	static function testInstancedBuiltins():Void
+	{
+		Sys.println('-- instanced shaders: gl_InstanceID / gl_VertexID --');
+		var vertex = vs('
+attribute vec4 openfl_Position;
+uniform mat4 openfl_Matrix;
+void main(void) {
+	float k = float(gl_InstanceID) * 2.0 + float(gl_VertexID);
+	vec4 p = openfl_Position;
+	p.x += k;
+	gl_Position = openfl_Matrix * p;
+}
+');
+		var rv = GLSLToMSL.translateSafe(vertex, true);
+		check('instance: no errors', rv.errors.length == 0, rv.errors.join('; '));
+		check('instance: instance_id input declared', has(rv.code, 'xlatInstanceID [[instance_id]]'));
+		check('instance: vertex_id input declared', has(rv.code, 'xlatVertexID [[vertex_id]]'));
+		check('instance: gl_InstanceID rewritten', has(rv.code, 'float(xlatInstanceID)'));
+		check('instance: gl_VertexID rewritten', has(rv.code, 'float(xlatVertexID)'));
 		Sys.println('');
 	}
 

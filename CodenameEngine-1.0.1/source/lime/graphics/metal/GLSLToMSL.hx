@@ -917,6 +917,18 @@ class GLSLToMSL
 						out.add('xlatIn.position');
 						i++;
 						continue;
+					case 'gl_InstanceID':
+						if (isVertex) { out.add('xlatInstanceID'); i++; continue; }
+						errors.push('Unsupported built-in: ' + t.text);
+						out.add(t.text);
+						i++;
+						continue;
+					case 'gl_VertexID':
+						if (isVertex) { out.add('xlatVertexID'); i++; continue; }
+						errors.push('Unsupported built-in: ' + t.text);
+						out.add(t.text);
+						i++;
+						continue;
 					case 'gl_PointSize', 'gl_FrontFacing', 'gl_PointCoord', 'gl_FragDepth':
 						errors.push('Unsupported built-in: ' + t.text);
 						out.add(t.text);
@@ -1484,6 +1496,16 @@ class GLSLToMSL
 				out.add('xlatIn.position');
 				i++;
 				continue;
+			}
+			if (t.kind == Ident && (t.text == 'gl_InstanceID' || t.text == 'gl_VertexID'))
+			{
+				if (isVertex)
+				{
+					out.add(t.text == 'gl_InstanceID' ? 'xlatInstanceID' : 'xlatVertexID');
+					i++;
+					continue;
+				}
+				errors.push('Unsupported built-in: ' + t.text);
 			}
 			if (t.kind == Ident && (t.text == 'texture2D' || t.text == 'textureCube' || t.text == 'texture3D' || t.text == 'texture2DProj'))
 			{
@@ -2860,6 +2882,11 @@ class GLSLToMSL
 		if (isVertex)
 		{
 			parts.push('const XlatMtlVertexIn xlatIn [[stage_in]]');
+			// [cne-instance] GLSL gl_InstanceID / gl_VertexID need explicit Metal system
+			// inputs; declaring them unconditionally is valid even for non-instanced draws
+			// (instance id is 0 then).
+			parts.push('uint xlatInstanceID [[instance_id]]');
+			parts.push('uint xlatVertexID [[vertex_id]]');
 		}
 		else
 		{
