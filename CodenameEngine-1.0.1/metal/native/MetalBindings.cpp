@@ -665,6 +665,11 @@ namespace lime {
 		}
 		inline int FastBoundTextureId (int unit)
 		{
+			if (gLegacyDraw)
+			{
+				auto it = MetalContext::boundTextures.find (unit);
+				return (it == MetalContext::boundTextures.end ()) ? 0 : it->second;
+			}
 			if (unit >= 0 && unit < 32) return gBoundTexIds[unit];
 			auto it = MetalContext::boundTextures.find (unit);
 			return (it == MetalContext::boundTextures.end ()) ? 0 : it->second;
@@ -672,6 +677,11 @@ namespace lime {
 		inline bool IsTextureBound (int textureId)
 		{
 			if (textureId <= 0) return false;
+			if (gLegacyDraw)
+			{
+				for (auto& b : MetalContext::boundTextures) if (b.second == textureId) return true;
+				return false;
+			}
 			for (int i = 0; i < 32; ++i) if (gBoundTexIds[i] == textureId) return true;
 			return false;
 		}
@@ -2202,6 +2212,14 @@ namespace lime {
 			}
 
 			int locations[32];
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] f=%u bind prog=%d fbo=%d streams=%d attrs=%zu\n",
+					metal::gFrameIndex, MetalContext::state.currentProgram,
+					MetalContext::state.currentFramebuffer, stream, vao->attribs.size ());
+				std::fflush (stderr);
+			}
+
 			// [cne-instance] divisor>0 attributes are fed through bgfx's instance data buffer;
 			// they are excluded from the per-vertex stream grouping below.
 			SetupInstanceData (vao, (int)gPendingInstances);
@@ -7533,6 +7551,14 @@ namespace lime {
 				(void)numIndices;
 			}
 
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] f=%u presubmit prog=%d view=%u fbo=%d\n",
+					metal::gFrameIndex, MetalContext::state.currentProgram, (unsigned)view,
+					MetalContext::state.currentFramebuffer);
+				std::fflush (stderr);
+			}
+
 			// [cne-merge] Keep indexed single-instance draws open so the next compatible draw can
 			// extend the same index range.  Everything else is submitted immediately (the open
 			// draw was already flushed in BindVertexStreams).
@@ -7639,6 +7665,7 @@ namespace lime {
 	// O(indices) on the CPU.  Partial ranges still take the direct path.
 	uint32_t MaxIndexPlusOneCached (BufferData& buffer, uint32_t elementSize, uint32_t firstIndex, int count)
 	{
+		if (gLegacyDraw) return MaxIndexPlusOne (buffer.bytes, elementSize, firstIndex, count);
 		if (firstIndex == 0 && count > 0
 		&&  (size_t)count * elementSize == buffer.bytes.size ())
 		{
