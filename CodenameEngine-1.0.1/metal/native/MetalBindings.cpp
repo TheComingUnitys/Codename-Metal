@@ -486,6 +486,9 @@ namespace lime {
 				// [cne-shader-audit] number of lime_gl_uniform* writes since the program
 				// was configured.  0 == no GL caller ever fed this uniform.
 				uint32_t writeCount = 0;
+				// [cne-fastpath] set when glUniform* changed the staging value; the next
+				// submit uploads it (the first submit of a frame sends the whole program).
+				bool dirty = true;
 			};
 
 			int vertexShader = 0;
@@ -509,6 +512,16 @@ namespace lime {
 			int pixelZoomLocation = -1;
 			// [cne-mtl] time spent in bgfx::createProgram for this program (ms, -1 = never)
 			double linkMs = -1.0;
+
+			// [cne-fastpath] per-program caches.  uniformFrame is the frame in which the
+			// full uniform block was last uploaded; on the first submit of a frame everything
+			// is uploaded, afterwards only uniforms glUniform* touched (dirty).
+			uint32_t uniformFrame = 0xFFFFFFFFu;
+			uint32_t samplerKeysFrame = 0xFFFFFFFFu;
+			std::vector<uint32_t> samplerKeys;
+			// ProgramSamplesRenderTarget() result, valid for gBoundTexVersion.
+			uint32_t samplesRtVersion = 0xFFFFFFFFu;
+			bool samplesRtValue = false;
 		};
 
 		/** Payload attached to `Object` entries; keyed by GL object id. */
@@ -530,6 +543,38 @@ namespace lime {
 		uint64_t ToBgfxBlend (int glFactor);
 		// [cne-rtflip] whether the texture bound to unit 0 is a render target
 		static bool gBoundTexIsRenderTarget = false;
+
+		// [cne-fastpath] last bgfx render state actually submitted.  Submitting the same state
+		// again is skipped (encoder state is sticky until the frame ends).
+		static uint64_t gAppliedState = ~0ull;
+		static uint32_t gAppliedStateFrame = 0xFFFFFFFFu;
+		inline void ApplyBgfxState (uint64_t state)
+		{
+			if (state == gAppliedState && metal::gFrameIndex == gAppliedStateFrame) return;
+			bgfx::setState (state);
+			gAppliedState = state;
+			gAppliedStateFrame = metal::gFrameIndex;
+		}
+
+		// [cne-fastpath] bound-texture bookkeeping: the draw path needs is-texture-bound
+		// and a sampler-set version without walking MetalContext::boundTextures.
+		static uint32_t gBoundTexVersion = 1;
+		// [cne-fastpath] bumps whenever a bgfx framebuffer handle may have been retired.
+		static uint32_t gFboCacheGeneration = 1;
+		static int gBoundTexIds[32] = {0};
+		inline void NoteBoundTexture (int unit, int textureId)
+		{
+			if (unit < 0 || unit >= 32) return;
+			if (gBoundTexIds[unit] == textureId) return;
+			gBoundTexIds[unit] = textureId;
+			++gBoundTexVersion;
+		}
+		inline bool IsTextureBound (int textureId)
+		{
+			if (textureId <= 0) return false;
+			for (int i = 0; i < 32; ++i) if (gBoundTexIds[i] == textureId) return true;
+			return false;
+		}
 
 		// [cne-maxtex] per-frame diagnostics (see SubmitDraw)
 		static int gFrameSkipped = 0;
@@ -1587,14 +1632,13 @@ namespace lime {
 			// The constant attributes are resolved *before* the buffers are bound: whether
 			// one is needed decides how many of bgfx's four vertex streams the real buffers
 			// may take (one slot is always kept free for the shared constant stream).
-			static std::set<uint8_t> coveredScratch;
-			auto& covered = coveredScratch;
-			covered.clear ();
+			// Attribute locations are small; a bitmask avoids a per-draw std::set allocation.
+			uint32_t coveredMask = 0;
 			for (auto& a : vao->attribs)
 			{
 				if (a.second.enabled)
 				{
-					covered.insert (a.first);
+					if (a.first < 32) coveredMask |= (1u << a.first);
 					if (auditProgram != nullptr) auditProgram->fedAttribs.insert (a.first);
 				}
 			}
@@ -1613,7 +1657,7 @@ namespace lime {
 				// Attributes the vertex array already supplies from a real buffer must NOT
 				// also be fed as a constant: two streams declaring the same attribute make
 				// bgfx pick one of them, and the geometry comes out stretched.
-				if (covered.count (glLocation) != 0) continue;   // real data wins
+				if (glLocation < 32 && (coveredMask & (1u << glLocation)) != 0) continue;   // real data wins
 
 				// Only feed attributes this program actually declares.  An unmapped GL
 				// location falls back to the identity bgfx slot, which collides with a real
@@ -3228,6 +3272,8 @@ namespace lime {
 
 			// [cne-shader-audit] runtime coverage: did any GL caller ever feed this uniform?
 			++uniform->writeCount;
+			// [cne-fastpath] upload this uniform on the next submit instead of every submit.
+			uniform->dirty = true;
 
 			const uint32_t vectorStride = 16;   // every MSL uniform member is float4-aligned
 
@@ -3294,8 +3340,20 @@ namespace lime {
 			ProgramData* program = CurrentProgram ();
 			if (program == nullptr) return;
 
-			for (auto& uniform : program->uniforms)
+			// bgfx keeps uniform/texture state until the frame ends, so uploading everything on
+			// the program's first submit of a frame and only the dirty uniforms afterwards is
+			// equivalent to uploading every draw - without the per-draw cost.
+			const uint32_t frame = metal::gFrameIndex;
+			const bool uploadAllUniforms = program->uniformFrame != frame;
+			const bool uploadAllSamplers = program->samplerKeysFrame != frame;
+			program->uniformFrame = frame;
+			program->samplerKeysFrame = frame;
+			if (program->samplerKeys.size () != program->uniforms.size ())
+				program->samplerKeys.assign (program->uniforms.size (), 0u);
+
+			for (size_t i = 0; i < program->uniforms.size (); ++i)
 			{
+				ProgramData::Uniform& uniform = program->uniforms[i];
 				if (!bgfx::isValid (uniform.handle)) continue;
 
 				if (uniform.isSampler)
@@ -3304,20 +3362,24 @@ namespace lime {
 					if (bound == MetalContext::boundTextures.end ())
 					{
 						ReportSamplerSkip (uniform.textureUnit, -1, "no-bound-texture");
+						program->samplerKeys[i] = 0;
 						continue;
 					}
 
 					auto texture = textures.find (bound->second);
-					if (texture == textures.end ())
+					if (texture == textures.end () || !bgfx::isValid (texture->second.handle))
 					{
-						ReportSamplerSkip (uniform.textureUnit, bound->second, "unknown-texture");
+						ReportSamplerSkip (uniform.textureUnit, bound->second,
+							texture == textures.end () ? "unknown-texture" : "invalid-handle");
+						program->samplerKeys[i] = 0;
 						continue;
 					}
-					if (!bgfx::isValid (texture->second.handle))
-					{
-						ReportSamplerSkip (uniform.textureUnit, bound->second, "invalid-handle");
-						continue;
-					}
+
+					const uint32_t samplerFlags = ToBgfxSampler (texture->second);
+					const uint32_t key = (uint32_t)texture->second.handle.idx * 2654435761u
+						^ samplerFlags ^ ((uint32_t)uniform.textureUnit + 1u) * 2246822519u;
+					if (!uploadAllSamplers && program->samplerKeys[i] == key) continue;
+					program->samplerKeys[i] = key;
 
 					if (SamplerLogEnabled ())
 					{
@@ -3329,11 +3391,13 @@ namespace lime {
 					}
 
 					bgfx::setTexture ((uint8_t)uniform.textureUnit, uniform.handle,
-						texture->second.handle, ToBgfxSampler (texture->second));
+						texture->second.handle, samplerFlags);
 					continue;
 				}
 
 				if (uniform.value.empty ()) continue;
+				if (!uploadAllUniforms && !uniform.dirty) continue;
+				uniform.dirty = false;
 				bgfx::setUniform (uniform.handle, uniform.value.data (), uniform.memberCount);
 			}
 
@@ -3820,7 +3884,7 @@ namespace lime {
 			{
 				if (!bgfx::isValid (texture)) return;
 
-				bgfx::setState (BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+				ApplyBgfxState (BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
 
 				// x/y are the clip-space translation of the quarter [-1,0]x[0,1] etc.
 				const float m[16] = {
@@ -4722,6 +4786,7 @@ namespace lime {
 					std::fflush (stderr);
 				}
 			}
+			++gFboCacheGeneration;
 		}
 
 		void InvalidateFramebuffersForTexture (int textureId)
@@ -4758,6 +4823,7 @@ namespace lime {
 				}
 				fb.second.pendingTexture = -1;
 			}
+			++gFboCacheGeneration;
 		}
 
 		void EnsureFramebuffer (int framebufferId)
@@ -4987,6 +5053,24 @@ namespace lime {
 			gActiveViewAttachment = -2147483647;
 		}
 
+		// [cne-fastpath] draw-path wrapper: same framebuffer as the previous draw and nothing
+		// invalidated it -> return the cached handle without entering EnsureFramebuffer().
+		inline bgfx::FrameBufferHandle EnsureFramebufferFast (int framebufferId)
+		{
+			if (framebufferId == 0) return BGFX_INVALID_HANDLE;
+			static int lastId = -1;
+			static uint32_t lastGen = 0;
+			static bgfx::FrameBufferHandle last = BGFX_INVALID_HANDLE;
+			if (framebufferId == lastId && lastGen == gFboCacheGeneration && bgfx::isValid (last))
+				return last;
+			EnsureFramebuffer (framebufferId);
+			auto it = framebuffers.find (framebufferId);
+			last = (it != framebuffers.end ()) ? it->second.handle : bgfx::FrameBufferHandle ();
+			lastId = framebufferId;
+			lastGen = gFboCacheGeneration;
+			return last;
+		}
+
 		uint16_t ActiveViewForTarget ()
 		{
 			// A new frame always starts with a clean allocation, no matter whether the first
@@ -5078,6 +5162,7 @@ namespace lime {
 						fb.second.failedForTexture = -1;
 						fb.second.pendingTexture = -1;
 					}
+					++gFboCacheGeneration;
 				}
 				if (sizeChanged || surfaceChanged)
 				{
@@ -5152,7 +5237,7 @@ namespace lime {
 			int attachment = 0;
 			if (target != 0)
 			{
-				EnsureFramebuffer (target);
+				EnsureFramebufferFast (target);
 				auto fbIt = framebuffers.find (target);
 				if (fbIt != framebuffers.end ()) attachment = fbIt->second.texture;
 			}
@@ -5167,7 +5252,7 @@ namespace lime {
 				}
 				else
 				{
-					EnsureFramebuffer (target);
+					EnsureFramebufferFast (target);
 
 					// View ids 0..199 are reserved for offscreen passes and 250+ for the screen.
 					// Frame recordings with more than 200 distinct (fbo, attachment) pairs are
@@ -5294,6 +5379,34 @@ namespace lime {
 			x = x0; y = y0; w = x1 - x0; h = y1 - y0;
 		}
 
+		// [cne-fastpath] per-view rect/scissor cache: ConfigureView() runs for every draw and
+		// almost always sets the same values.  bgfx view state is sticky, so only the changed
+		// fields are submitted.
+		struct ViewRectCache
+		{
+			int target = -2;
+			int x = -1, y = -1, w = -1, h = -1;
+			int sx = -1, sy = -1, sw = -1, sh = -1;
+			bool scOn = false;
+		};
+		static ViewRectCache gViewRectCache[256];
+		inline void CachedViewRect (uint16_t view, int target, int x, int y, int w, int h)
+		{
+			ViewRectCache& c = gViewRectCache[view];
+			if (c.target != target) { c.target = target; c.x = c.y = c.w = c.h = -1; c.sx = c.sy = c.sw = c.sh = -1; }
+			if (x == c.x && y == c.y && w == c.w && h == c.h) return;
+			c.x = x; c.y = y; c.w = w; c.h = h;
+			bgfx::setViewRect (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
+		}
+		inline void CachedViewScissor (uint16_t view, int target, bool on, int x, int y, int w, int h)
+		{
+			ViewRectCache& c = gViewRectCache[view];
+			if (c.target != target) { c.target = target; c.sx = c.sy = c.sw = c.sh = -1; }
+			if (on == c.scOn && x == c.sx && y == c.sy && w == c.sw && h == c.sh) return;
+			c.scOn = on; c.sx = x; c.sy = y; c.sw = w; c.sh = h;
+			bgfx::setViewScissor (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
+		}
+
 		void ConfigureView (uint16_t view)
 		{
 			/**
@@ -5403,21 +5516,20 @@ namespace lime {
 			ClampToTarget (vx, vy, vw, vh, targetW, targetH);
 
 			{
-
-				bgfx::setViewRect (view, (uint16_t)vx, (uint16_t)(targetH - (vy + vh)),
-					(uint16_t)vw, (uint16_t)vh);
+				CachedViewRect (view, MetalContext::state.currentFramebuffer,
+					vx, targetH - (vy + vh), vw, vh);
 
 				if (MetalContext::state.scissorEnabled)
 				{
 					const int* sc = MetalContext::state.scissor;
 					int sx = sc[0], sy = sc[1], sw = sc[2], sh = sc[3];
 					ClampToTarget (sx, sy, sw, sh, targetW, targetH);
-					bgfx::setViewScissor (view, (uint16_t)sx, (uint16_t)(targetH - (sy + sh)),
-						(uint16_t)sw, (uint16_t)sh);
+					CachedViewScissor (view, MetalContext::state.currentFramebuffer, true,
+						sx, targetH - (sy + sh), sw, sh);
 				}
 				else
 				{
-					bgfx::setViewScissor (view, 0, 0, 0, 0);
+					CachedViewScissor (view, MetalContext::state.currentFramebuffer, false, 0, 0, 0, 0);
 				}
 			}
 
@@ -5474,7 +5586,7 @@ namespace lime {
 				// Binding the stale/invalid handle left the view without a render target, so the
 				// pass drew into the backbuffer and the texture the composite samples stayed
 				// empty - the "screen shader output is black" report.
-				EnsureFramebuffer (MetalContext::state.currentFramebuffer);
+				EnsureFramebufferFast (MetalContext::state.currentFramebuffer);
 
 				auto fbo = framebuffers.find (MetalContext::state.currentFramebuffer);
 				if (fbo != framebuffers.end () && bgfx::isValid (fbo->second.handle))
@@ -5549,22 +5661,27 @@ namespace lime {
 		**/
 		bool ProgramSkipped (int glProgram)
 		{
-			static const char* spec = std::getenv ("CNE_METAL_SKIP_PROGRAM");
-			if (spec == nullptr || spec[0] == '\0') return false;
-
-			const char* p = spec;
-			while (*p != '\0')
+			// Parsed once: the per-draw path must not do getenv/strtol for a diagnostic that
+			// is normally disabled.
+			static const std::set<int> skipped = [] ()
 			{
-				char* end = nullptr;
-				const long v = std::strtol (p, &end, 10);
-				if (end == p) break;
-				p = end;
-				if ((int)v == glProgram) return true;
-				if (*p == ',') ++p;
-				else break;
-			}
-
-			return false;
+				std::set<int> out;
+				const char* spec = std::getenv ("CNE_METAL_SKIP_PROGRAM");
+				if (spec == nullptr || spec[0] == '\0') return out;
+				const char* p = spec;
+				while (*p != '\0')
+				{
+					char* end = nullptr;
+					const long v = std::strtol (p, &end, 10);
+					if (end == p) break;
+					out.insert ((int)v);
+					p = end;
+					if (*p == ',') ++p;
+					else break;
+				}
+				return out;
+			} ();
+			return !skipped.empty () && skipped.count (glProgram) != 0;
 		}
 
 		/** Per-frame submit counter; also drives the CNE_METAL_SKIP_SUBMIT experiment. */
@@ -5576,70 +5693,78 @@ namespace lime {
 
 			    CNE_METAL_SKIP_SUBMIT="2690:7-10,2690:48-52"      one frame
 			    CNE_METAL_SKIP_SUBMIT="2680-2800:7-10"            frame range
-			    CNE_METAL_SKIP_SUBMIT="*:7-10"                    every frame
-
-			This is the only way to attribute a visible element to an exact draw when the
-			program alone is not decisive (e.g. two channels that share a program).
 		**/
 		bool SubmitSkipped (uint32_t frame, uint32_t index)
 		{
-			static const char* spec = std::getenv ("CNE_METAL_SKIP_SUBMIT");
-			if (spec == nullptr || spec[0] == '\0') return false;
-
-			const char* p = spec;
-			while (*p != '\0')
+			// Parsed once into ranges; the draw path only does a few integer compares.
+			struct Range { uint32_t flo, fhi, lo, hi; };
+			static const std::vector<Range> ranges = [] ()
 			{
-				char* end = nullptr;
-				unsigned long flo = 0, fhi = 0xFFFFFFFFul;
-				if (*p == '*')
+				std::vector<Range> out;
+				const char* spec = std::getenv ("CNE_METAL_SKIP_SUBMIT");
+				if (spec == nullptr || spec[0] == '\0') return out;
+
+				const char* p = spec;
+				while (*p != '\0')
 				{
+					char* end = nullptr;
+					uint32_t flo = 0, fhi = 0xFFFFFFFFu;
+					if (*p == '*')
+					{
+						++p;
+					}
+					else
+					{
+						flo = (uint32_t)std::strtoul (p, &end, 10);
+						if (end == p) break;
+						p = end;
+						fhi = flo;
+						if (*p == '-')
+						{
+							++p;
+							fhi = (uint32_t)std::strtoul (p, &end, 10);
+							if (end == p) break;
+							p = end;
+						}
+					}
+
+					if (*p != ':') break;
 					++p;
-				}
-				else
-				{
-					flo = std::strtoul (p, &end, 10);
+
+					const uint32_t lo = (uint32_t)std::strtoul (p, &end, 10);
 					if (end == p) break;
 					p = end;
-					fhi = flo;
+					uint32_t hi = lo;
 					if (*p == '-')
 					{
 						++p;
-						fhi = std::strtoul (p, &end, 10);
+						hi = (uint32_t)std::strtoul (p, &end, 10);
 						if (end == p) break;
 						p = end;
 					}
+
+					out.push_back (Range { flo, fhi, lo, hi });
+					if (*p == ',') ++p;
+					else break;
 				}
-
-				if (*p != ':') break;
-				++p;
-
-				const unsigned long lo = std::strtoul (p, &end, 10);
-				if (end == p) break;
-				p = end;
-				unsigned long hi = lo;
-				if (*p == '-')
-				{
-					++p;
-					hi = std::strtoul (p, &end, 10);
-					if (end == p) break;
-					p = end;
-				}
-
-				if ((unsigned long)frame >= flo && (unsigned long)frame <= fhi
-				&&  index >= lo && index <= hi) return true;
-
-				if (*p == ',') ++p;
-				else break;
+				return out;
+			} ();
+			if (ranges.empty ()) return false;
+			for (const Range& r : ranges)
+			{
+				if (frame >= r.flo && frame <= r.fhi && index >= r.lo && index <= r.hi) return true;
 			}
-
 			return false;
 		}
-
-		/** Turns the current GL state into exactly one bgfx submit. */
 		/** True when the program really samples a render target with one of its own samplers. */
 		static bool ProgramSamplesRenderTarget (ProgramData* program)
 		{
 			if (program == nullptr) return false;
+			// The answer only depends on which textures are bound, so cache it per
+			// bound-texture version instead of rescanning uniforms on every draw.
+			if (program->samplesRtVersion == gBoundTexVersion) return program->samplesRtValue;
+
+			bool result = false;
 			bool sawSampler = false;
 			for (auto& u : program->uniforms)
 			{
@@ -5648,15 +5773,20 @@ namespace lime {
 				auto b = MetalContext::boundTextures.find (u.textureUnit);
 				if (b == MetalContext::boundTextures.end ()) continue;
 				auto t = textures.find (b->second);
-				if (t != textures.end () && t->second.isRenderTarget) return true;
+				if (t != textures.end () && t->second.isRenderTarget) { result = true; break; }
 			}
-			if (sawSampler) return false;
-			for (auto& binding : MetalContext::boundTextures)
+			if (!result && !sawSampler)
 			{
-				auto t = textures.find (binding.second);
-				if (t != textures.end () && t->second.isRenderTarget) return true;
+				for (auto& binding : MetalContext::boundTextures)
+				{
+					auto t = textures.find (binding.second);
+					if (t != textures.end () && t->second.isRenderTarget) { result = true; break; }
+				}
 			}
-			return false;
+
+			program->samplesRtVersion = gBoundTexVersion;
+			program->samplesRtValue = result;
+			return result;
 		}
 
 		/** Applies the Y mirror to the matrix that was uploaded for the current draw. */
@@ -5829,32 +5959,27 @@ namespace lime {
 			// [cne-feedback] A draw that samples the texture of the framebuffer it renders into is
 			// a feedback loop.  GL leaves it undefined but usually shows the previous content;
 			// Metal returns black, which blacks out every song whose screen shader does that.
+			// Fast path: only look the framebuffer up when the attachment is actually bound.
 			if (MetalContext::state.currentFramebuffer != 0)
 			{
 				auto fbIt = framebuffers.find (MetalContext::state.currentFramebuffer);
-				if (fbIt != framebuffers.end ())
+				if (fbIt != framebuffers.end () && IsTextureBound (fbIt->second.texture)
+				&&  (fbIt->second.pendingTexture < 0 || fbIt->second.pendingTexture != fbIt->second.texture))
 				{
-					for (auto& binding : MetalContext::boundTextures)
+					static const bool fbLog = [] ()
 					{
-						if (binding.second != fbIt->second.texture) continue;
-						if (fbIt->second.pendingTexture >= 0 && fbIt->second.pendingTexture == binding.second) continue;
-
-						static const bool fbLog = [] ()
-						{
-							const char* v = std::getenv ("CNE_METAL_FEEDBACKLOG");
-							return v != nullptr && v[0] != '0' && v[0] != '\0';
-						} ();
-						static int fbLogged = 0;
-						if (fbLog && fbLogged < 12)
-						{
-							++fbLogged;
-							std::fprintf (stderr,
-								"[cne-feedback] f=%u sub#%u fbo=%d tex=%d prog=%d unit=%d\n",
-								metal::gFrameIndex, thisSubmit, MetalContext::state.currentFramebuffer,
-								binding.second, MetalContext::state.currentProgram, binding.first);
-							std::fflush (stderr);
-						}
-						break;
+						const char* v = std::getenv ("CNE_METAL_FEEDBACKLOG");
+						return v != nullptr && v[0] != '0' && v[0] != '\0';
+					} ();
+					static int fbLogged = 0;
+					if (fbLog && fbLogged < 12)
+					{
+						++fbLogged;
+						std::fprintf (stderr,
+							"[cne-feedback] f=%u sub#%u fbo=%d tex=%d prog=%d\n",
+							metal::gFrameIndex, thisSubmit, MetalContext::state.currentFramebuffer,
+							fbIt->second.texture, MetalContext::state.currentProgram);
+						std::fflush (stderr);
 					}
 				}
 			}
@@ -5917,7 +6042,7 @@ namespace lime {
 			// whose stage shader output id changes between frames (Dusttale) came out black.
 			if (MetalContext::state.currentFramebuffer != 0)
 			{
-				EnsureFramebuffer (MetalContext::state.currentFramebuffer);
+				EnsureFramebufferFast (MetalContext::state.currentFramebuffer);
 			}
 
 			// Which framebuffer does the sampled texture belong to?  Needed by the frame-end
@@ -6438,7 +6563,7 @@ namespace lime {
 			}
 
 			ApplyStencilState ();
-			bgfx::setState (ToBgfxState ());
+			ApplyBgfxState (ToBgfxState ());
 
 			// [cne-rtdebug] CNE_METAL_SHOW_WORLD_RT=1: draw the *world* render target instead of
 			// the filtered one on the final screen composite.  Any sampler unit that currently
@@ -6636,7 +6761,11 @@ namespace lime {
 
 			{ ProfScope profUA (&gProfUniformApplyUs); ApplyUniformsBeforeDraw (); }
 
-			if (swappedUnit >= 0) MetalContext::boundTextures[swappedUnit] = swappedPrev;
+			if (swappedUnit >= 0)
+			{
+				MetalContext::boundTextures[swappedUnit] = swappedPrev;
+				NoteBoundTexture (swappedUnit, swappedPrev);
+			}
 
 			if (indexed)
 			{
@@ -6848,6 +6977,7 @@ namespace lime {
 		else
 		{
 			MetalContext::boundTextures[MetalContext::state.activeTextureUnit] = texture;
+			NoteBoundTexture (MetalContext::state.activeTextureUnit, texture);
 			if (MetalContext::state.activeTextureUnit == 0)
 			{
 				auto tit = textures.find (texture);
@@ -7022,7 +7152,7 @@ namespace lime {
 		}
 
 		it->second.failedForTexture = -1;
-		EnsureFramebuffer (MetalContext::state.currentFramebuffer);
+		EnsureFramebufferFast (MetalContext::state.currentFramebuffer);
 	}
 
 	//@impl lime_gl_check_framebuffer_status
@@ -7035,7 +7165,7 @@ namespace lime {
 		auto texture = textures.find (it->second.texture);
 		if (texture == textures.end () || !bgfx::isValid (texture->second.handle)) return GL_FRAMEBUFFER_COMPLETE;
 
-		EnsureFramebuffer (MetalContext::state.currentFramebuffer);
+		EnsureFramebufferFast (MetalContext::state.currentFramebuffer);
 
 		return bgfx::isValid (it->second.handle) ? GL_FRAMEBUFFER_COMPLETE : 0x8CD6; // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT
 	}

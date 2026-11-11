@@ -697,8 +697,10 @@
 	//@impl cne_metal_bind_texture2d
 	void cne_metal_bind_texture2d (int texture)
 	{
-		if (texture == 0) MetalContext::boundTextures.erase (MetalContext::state.activeTextureUnit);
-		else MetalContext::boundTextures[MetalContext::state.activeTextureUnit] = texture;
+		const int unit = MetalContext::state.activeTextureUnit;
+		if (texture == 0) MetalContext::boundTextures.erase (unit);
+		else MetalContext::boundTextures[unit] = texture;
+		NoteBoundTexture (unit, texture);
 	}
 
 	//@impl cne_metal_draw_indexed
