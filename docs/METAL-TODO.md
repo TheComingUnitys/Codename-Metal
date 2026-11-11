@@ -7,7 +7,8 @@ single app build is done: mask (runtime pixel proof), `readPixels` (offscreen im
 one-frame backbuffer cache), deterministic pixel-regression goldens, AOT coverage and the
 runtime-translation policy decision.
 
-Baseline: **114 / 116** stages ship a prebuilt `.metallib` (verified by
+Baseline: **56 / 56** stages ship a prebuilt `.metallib` (the cache covers only the original
+engine corpus; mod shaders are translated at runtime) (verified by
 `metal/scripts/check-docs.py` and `gen_shader_aot.py --strict`).
 
 The remaining work is **multi-day architectural / optional** and is tracked in the

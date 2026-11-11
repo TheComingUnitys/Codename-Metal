@@ -524,8 +524,8 @@ def strict_audit(entries, metallib_stats):
 
 # ----------------------------------------------------------------------- main
 
-def collect(project, misses_dir=None):
-    sources, classes, roots = aot_shaders.build_sources(project)
+def collect(project, misses_dir=None, include_mods=False):
+    sources, classes, roots = aot_shaders.build_sources(project, include_mods=include_mods)
 
     # [runtime shaders] CustomShader sources that are composed at runtime (mod scripts,
     # generated combinations) can never be enumerated statically.  ShaderAot.onMiss() dumps
@@ -579,6 +579,8 @@ def main(argv=None):
                         help='recompile every .metallib even if the incremental cache is valid')
     parser.add_argument('--include-misses', action='store_true',
                         help='also bake runtime-composed shader sources captured in --misses-dir')
+    parser.add_argument('--include-mods', action='store_true',
+                        help='also cache shaders from the project mods/ directory (default: off; mods are translated at runtime)')
     parser.add_argument('--misses-dir', default='/tmp/cne-aot-missing',
                         help='directory with ShaderAot.onMiss() source dumps (default: /tmp/cne-aot-missing)')
     parser.add_argument('--quiet', action='store_true')
@@ -592,7 +594,10 @@ def main(argv=None):
         sys.stderr.write('error: missing build-time translator main: %s\n' % TRANSLATOR_MAIN)
         return 2
 
-    entries, classes, roots = collect(project, args.misses_dir if args.include_misses else None)
+    entries, classes, roots = collect(project, args.misses_dir if args.include_misses else None,
+                                      include_mods=args.include_mods)
+    if not args.quiet:
+        print('[gen-shader-aot] mods/ %s' % ('included' if args.include_mods else 'excluded (runtime translation)'))
     if args.include_misses and not args.quiet:
         print('[gen-shader-aot] runtime misses included from %s (total entries: %d)'
               % (os.path.abspath(os.path.expanduser(args.misses_dir)), len(entries)))

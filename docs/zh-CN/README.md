@@ -24,7 +24,7 @@ built and debugged.
 - **Metal 渲染**：所有 2D 渲染经 `lime_gl_*` GL 形状 API 仿真层 → `bgfx` Metal 后端提交；
   进程内没有 GL context，也没有 GL 交换链。
 - **着色器 AOT**：构建期把 GLSL 翻译成 Metal Shading Language 并预编译为 `.metallib`
-  （当前 116 个 stage 中 114 个带预编译库；运行时零 GLSL 翻译）。
+  （当前 56 个 stage 全部带预编译库；引擎自带 shader 运行时零 GLSL 翻译；mod shader 不进缓存，运行时翻译）。
 - **双路径**：Lime 的 `lime_gl_*` CFFI 兼容层 + 更快的原生 `cne_metal_*` 路径（默认启用）。
 - **读回与运行时自检**：`glReadPixels` 已实现（离屏目标走 READ_BACK 纹理 + `bgfx::read`，
   背缓冲走一帧缓存）；`CNE_METAL_SELFTEST=1` 会画一个带 mask 的 OpenFL 精灵并端到端校验
@@ -200,24 +200,24 @@ haxelib run lime build mac
 （`ShaderAotCache.hx`、`metal/audit/aot-coverage.md` 均已 gitignore）。
 `apply.sh` 与 `make-universal.sh` 会在每次构建前重新生成：
 
-- 枚举 OpenFL/Flixel/CNE/外部 + `mods/**/*.frag|.vert` 的全部 GLSL → MSL → `.metallib`
-  （基线：116 个 stage，114 个预编译库）；
-- **运行期组合的 shader 会自动烘焙**：mod 脚本/动态生成的 shader 无法静态枚举，
-  所以缓存 miss 时 `ShaderAot` 会把拼装好的 GLSL 原样写入 `/tmp/cne-aot-missing/`
-  （同时用运行时兜底翻译）。下一次 `apply.sh` / `make-universal.sh` 会通过
-  `--include-misses` 把这些源码一起烘焙进 MSL + `.metallib`，miss 过一次的 shader
-  从此就是预编译命中。需要干净、与机器无关的构建时设 `CNE_AOT_NO_MISSES=1`。
+- 只枚举**原版引擎语料**（OpenFL/Flixel/CNE/外部 classpath + `assets/shaders`）
+  → MSL → `.metallib`（基线：**56 个 stage，56 个预编译库**，全部编译成功；
+  `mods/` 下的 shader 默认不进缓存）；
+- **mod shader 在运行时翻译**（本版翻译器已覆盖常见写法）。如果确实想构建期烘焙：
+  `CNE_AOT_INCLUDE_MODS=1` 会额外枚举 `mods/**/*.frag|.vert`；
+  `CNE_AOT_INCLUDE_MISSES=1` 会额外烘焙 `/tmp/cne-aot-missing/` 里的运行期 miss 源码
+  （`ShaderAot.onMiss()` 写入）。两者**默认关闭**，发布构建不会把构建机上的 mod 烘进去。
 - 修改翻译器或 shader 后强制重建：
 
 ```sh
-python3 metal/scripts/gen_shader_aot.py [--include-misses]
+python3 metal/scripts/gen_shader_aot.py [--include-mods] [--include-misses]
 # 删掉 hxcpp 的旧目标文件后再构建（hxcpp 不跟踪头文件/生成文件依赖）
 rm -rf export/release/macos/obj/src/lime/graphics/metal/
 ```
 
 ### 6.4 Universal（arm64 + x86_64）与 DMG
 
-脚本会先生成 AOT 缓存（含运行期组合的 shader）；
+脚本会先生成**原版引擎**的 AOT 缓存（mod/运行期 miss 仅在上述环境变量开启时才包含）；
 发布用的 universal 包由脚本一次完成（Lime 的 `lime build mac` 只会按宿主架构出包，
 x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo` 合并）：
 
@@ -267,11 +267,11 @@ x86_64 的 exe/ndll 由脚本用 `HXCPP_M64` / `-DCNE_X64` 单独编译后 `lipo
   原型提升、重载参数折叠等规则；
 - `gen_shader_aot.py --check --strict`：已提交的 `ShaderAotCache.hx` 必须与重新生成的内容一致，
   且 `.metallib` 覆盖率不得低于 `metal/audit/aot-expected.json` 中登记的下限
-  （当前 112/116，允许 4 个 mod shader 回退）；
+  （当前 56/56，无允许回退）；
 - `metal/tools/frame_diff.py --selftest`：截图比对工具的自检（纯合成帧，无需 app）；
   真正的像素回归用 `metal/scripts/pixel-regression.sh --app <app> --scenario menu`
   （先 `--update` 生成金帧；金帧与 GPU/驱动相关，见 `metal/autotests/README.md`）；
-- `check-docs.py`：校验 README / METAL-TODO 里的 116/114 等数字与缓存一致，防止文档过期；
+- `check-docs.py`：校验 README / METAL-TODO 里的 AOT 数字与缓存一致，防止文档过期；
 - CI：`.github/workflows/metal-verify.yml` 在 macOS 上跑翻译器单测 + 文档校验
   （AOT 审计需要项目的 haxelib 依赖，留给本地 `./verify.sh`）。
 

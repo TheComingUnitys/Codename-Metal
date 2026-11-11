@@ -29,8 +29,9 @@ documents how it was built and debugged.
 - **Metal rendering**: every 2D draw goes through the `lime_gl_*` GL-shaped compatibility
   layer into bgfx's Metal backend. No GL context and no GL swap chain exist in the process.
 - **Shader AOT**: GLSL is translated to Metal Shading Language at build time and precompiled
-  into `.metallib` files (**116 cached shader stages**, **114 / 116** ship a prebuilt library;
-  zero runtime GLSL translation for the engine corpus).
+  into `.metallib` files (**56 cached shader stages**, **56 / 56** ship a prebuilt library;
+  zero runtime GLSL translation for the engine corpus).  Mod shaders are translated at
+  runtime and are not part of the cache.
 - **Two paths**: the Lime `lime_gl_*` CFFI compatibility layer plus the faster native
   `cne_metal_*` path (enabled by default).
 - **Diagnosable**: 70 `CNE_METAL_*` environment switches (`CNE_METAL_PROFILE`,
@@ -206,19 +207,20 @@ The baked GLSL -> MSL -> `.metallib` cache is **build output**, so it is not in 
 generated and gitignored).  `apply.sh` and `make-universal.sh` regenerate it before every
 build:
 
-- enumerates every GLSL source (OpenFL/Flixel/CNE/external + `mods/**/*.frag|.vert`)
-  -> MSL -> `.metallib` (baseline: 116 stages, 114 prebuilt libraries);
-- **runtime-composed shaders are baked automatically**: mod scripts and generated shader
-  variants cannot be enumerated statically, so on a cache miss `ShaderAot` dumps the exact
-  assembled GLSL to `/tmp/cne-aot-missing/` (and translates it at runtime while the
-  fallback is enabled).  The next `apply.sh` / `make-universal.sh` picks those sources up
-  (`--include-misses`) and bakes their MSL + `.metallib`, so a shader that missed once is
-  precompiled from then on.  Set `CNE_AOT_NO_MISSES=1` for a clean, machine-independent
-  build.
+- enumerates **only the original engine corpus** (OpenFL/Flixel/CNE/external classpath +
+  `assets/shaders`) -> MSL -> `.metallib` (baseline: **56 stages, 56 prebuilt libraries**,
+  all compiled; nothing from `mods/` is cached);
+- **mod shaders are translated at runtime** on first use (the translator fixes in this
+  release cover the common mod idioms).  If you deliberately want a build-time bake:
+  `CNE_AOT_INCLUDE_MODS=1` also enumerates `mods/**/*.frag|.vert`, and
+  `CNE_AOT_INCLUDE_MISSES=1` also bakes the runtime-miss dumps from
+  `/tmp/cne-aot-missing/` (`ShaderAot.onMiss()` writes them there).  Both are **off by
+  default**, so a release never bakes whatever mods happened to be installed on the build
+  machine.
 - after changing the translator or a shader, force a rebuild:
 
 ```sh
-python3 metal/scripts/gen_shader_aot.py [--include-misses]
+python3 metal/scripts/gen_shader_aot.py [--include-mods] [--include-misses]
 rm -rf export/release/macos/obj/src/lime/graphics/metal/   # hxcpp does not track generated deps
 ```
 
@@ -231,7 +233,7 @@ rm -rf export/release/macos/obj/src/lime/graphics/metal/   # hxcpp does not trac
 ./metal/scripts/make-universal.sh --verify export/release/macos/bin/CodenameEngine.app
 ```
 
-- the script regenerates the AOT shader cache (including runtime-composed sources) first;
+- the script regenerates the original-engine AOT shader cache first (mods/runtime misses only with the opt-in envs above);
 - `lime build mac` only emits the host architecture; the script builds the x86_64
   executable/ndll separately (`HXCPP_M64` / `-DCNE_X64`) and merges with `lipo`;
 - DMG packaging copies the app, strips bundled third-party mods by default, re-signs
@@ -263,7 +265,7 @@ Expected output: `OK - Metal backend compiles against bgfx API v167 and Lime`.
 - translator tests: `TestTranslate` (40 checks) + `TestTranslateCompat` (53 checks);
 - `gen_shader_aot.py --check --strict` verifies the committed cache is current and the
   `.metallib` coverage did not regress against `metal/audit/aot-expected.json`
-  (currently 114/116, 2 allowed fallbacks);
+  (currently 56/56, no allowed fallbacks);
 - `frame_diff.py --selftest` / `profile_check.py --selftest` self tests;
 - `check-docs.py` keeps the numbers in README/METAL-TODO in sync with the cache;
 - CI: `docs/ci/metal-verify.yml` (runs the dependency-free checks on macOS).

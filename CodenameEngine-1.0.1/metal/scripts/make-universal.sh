@@ -130,9 +130,13 @@ mkdir -p "$OUT"
 if [ "${DRY_RUN:-0}" != "1" ]; then
 	say "AOT shader cache"
 	AOT_ARGS=(--project "$PROJECT_DIR")
+	# Default: original-engine corpus only.  Mods/runtime misses are opt-in so releases do
+	# not bake whatever mods happened to be installed on the build machine.
+	if [ "${CNE_AOT_INCLUDE_MODS:-0}" = "1" ]; then
+		AOT_ARGS+=(--include-mods)
+	fi
 	MISSES_DIR="${CNE_AOT_MISSES_DIR:-/tmp/cne-aot-missing}"
-	if [ "${CNE_AOT_NO_MISSES:-0}" != "1" ] && [ -d "$MISSES_DIR" ] \
-	&& [ -n "$(find "$MISSES_DIR" -maxdepth 1 -name '*.glsl' -print -quit 2>/dev/null)" ]; then
+	if [ "${CNE_AOT_INCLUDE_MISSES:-0}" = "1" ]; then
 		AOT_ARGS+=(--include-misses --misses-dir "$MISSES_DIR")
 	fi
 	run "python3 '$METAL_DIR/scripts/gen_shader_aot.py' ${AOT_ARGS[*]}"

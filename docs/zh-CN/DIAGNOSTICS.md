@@ -86,7 +86,7 @@
 ### 2.4 着色器/AOT（`aot`+`mtl`+`shader`）
 
 ```text
-[cne-aot] EXIT cache=... entries=116 metallibStages=113 hits=... misses=0 runtimeTranslations=0
+[cne-aot] EXIT cache=... entries=56 metallibStages=56 hits=... misses=0 runtimeTranslations=0
 [cne-mtl] EXIT shaders=44 metallib=42 sourceCompile=2 metallibLoadFailures=0 ... newLibraryWithSourceMs=...
 ```
 
@@ -112,14 +112,15 @@
 
 ### 2.7 运行期组合的 shader（mod）
 
-AOT 缓存是构建产物，不提交。**运行期组合**的 shader 源（mod 脚本、动态生成的变体）无法
-静态枚举：缓存 miss 时 `ShaderAot` 会把拼装好的 GLSL 原样写入
-`/tmp/cne-aot-missing/<key>.<vert|frag>.glsl`，并在兜底开启时用运行时翻译。下一次
-`apply.sh` / `make-universal.sh` 会自动包含这些源码（`--include-misses`），把它们的
-MSL + `.metallib` 一起烘焙——miss 过一次的 shader 之后就是预编译命中。
+AOT 缓存是构建产物、不提交，且**只包含原版引擎语料**（自带 `assets/shaders` + 引擎
+classpath）。mod 的 shader 默认不进缓存，运行时首次使用时翻译（翻译器已覆盖常见写法）。
 
-- `CNE_AOT_MISSES_DIR=<dir>`：换一个 dump 目录；
-- `CNE_AOT_NO_MISSES=1`：忽略这些 dump，做干净、与机器无关的构建。
+缓存 miss 时 `ShaderAot` 仍会把拼装好的 GLSL 写入
+`/tmp/cne-aot-missing/<key>.<vert|frag>.glsl`，但**默认不烘焙**；需要构建期烘焙时显式开启：
+
+- `CNE_AOT_INCLUDE_MODS=1`：额外缓存 `mods/**/*.frag|.vert`（`--include-mods`）；
+- `CNE_AOT_INCLUDE_MISSES=1`：额外烘焙 `/tmp/cne-aot-missing` 的源码（`--include-misses`）；
+- `CNE_AOT_MISSES_DIR=<dir>`：换一个 dump 目录。
 
 ## 3. 帧录制与直连 Metal 回放（A/B 原型）
 

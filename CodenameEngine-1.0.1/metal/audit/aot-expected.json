@@ -1,8 +1,5 @@
 {
-  "cacheEntries": 116,
-  "minimumMetallibStages": 114,
-  "allowedMetallibFailures": {
-    "EFD80EB711B13CBD": "mod firething.frag: calls undefined noise1() (mod bug)",
-    "B3064EBB937D8A8F": "mod line.frag: gl_FragColor = vec2 assignment is invalid GLSL (mod bug)"
-  }
+  "cacheEntries": 56,
+  "minimumMetallibStages": 56,
+  "allowedMetallibFailures": {}
 }

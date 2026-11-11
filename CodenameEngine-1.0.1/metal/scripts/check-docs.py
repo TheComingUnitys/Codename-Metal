@@ -89,8 +89,9 @@ def main():
     todo = read(TODO)
 
     readme_cov = expect_one(r'\*\*(\d+) cached shader stages\*\*', readme, 'README.MD', 'cached stage count')
-    readme_libs = expect_one(r'\*\*(\d+) / 116\*\*', readme, 'README.MD', 'prebuilt library count')
-    todo_cov = expect_one(r'\*\*(\d+) / 116\*\*', todo, 'docs/METAL-TODO.md', 'coverage table cell')
+    ratio = r'\*\*(\d+) / ' + str(wanted_entries) + r'\*\*'
+    readme_libs = expect_one(ratio, readme, 'README.MD', 'prebuilt library count')
+    todo_cov = expect_one(ratio, todo, 'docs/METAL-TODO.md', 'coverage table cell')
 
     for where, value, actual, label in [
             ('README.MD', readme_cov, wanted_entries, 'cache entries'),

@@ -84,7 +84,7 @@ Threshold regression: `python3 metal/tools/profile_check.py <log> --max-frontend
 ### 2.4 Shaders / AOT (`aot` + `mtl` + `shader`)
 
 ```text
-[cne-aot] EXIT cache=... entries=116 metallibStages=114 hits=... misses=0 runtimeTranslations=0
+[cne-aot] EXIT cache=... entries=56 metallibStages=56 hits=... misses=0 runtimeTranslations=0
 [cne-mtl] EXIT shaders=44 metallib=42 sourceCompile=2 metallibLoadFailures=0 ... newLibraryWithSourceMs=...
 ```
 
@@ -113,16 +113,19 @@ Compare with `metal/tools/frame_diff.py`; scenario regression:
 
 ### 2.7 Runtime-composed shaders (mods)
 
-The baked AOT cache is build output and is not committed. Shader sources composed **at
-runtime** (mod scripts, generated variants) cannot be enumerated statically: on a cache
-miss `ShaderAot` dumps the exact assembled GLSL to
-`/tmp/cne-aot-missing/<key>.<vert|frag>.glsl` and translates it at runtime while the
-fallback is enabled. The next `apply.sh` / `make-universal.sh` includes those sources
-automatically (`--include-misses`) and bakes their MSL + `.metallib`, so a shader that
-missed once is precompiled from then on.
+The baked AOT cache is build output, is not committed, and contains **only the original
+engine corpus** (bundled `assets/shaders` + engine classpath).  Mod shaders are not
+cached: they are translated when the game runs (the translator covers the common mod
+idioms).
 
+On a cache miss `ShaderAot` still dumps the exact assembled GLSL to
+`/tmp/cne-aot-missing/<key>.<vert|frag>.glsl`.  Those dumps are **not baked by default**;
+opt in when you want a build-time bake:
+
+- `CNE_AOT_INCLUDE_MODS=1` - also cache `mods/**/*.frag|.vert` (`--include-mods`);
+- `CNE_AOT_INCLUDE_MISSES=1` - also bake the `/tmp/cne-aot-missing` sources
+  (`--include-misses`);
 - `CNE_AOT_MISSES_DIR=<dir>` - use a different dump directory.
-- `CNE_AOT_NO_MISSES=1` - ignore the dumps (clean, machine-independent build).
 
 ## 3. Frame capture + direct-Metal replay (A/B prototype)
 

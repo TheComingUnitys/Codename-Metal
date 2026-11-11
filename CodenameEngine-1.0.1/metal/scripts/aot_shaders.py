@@ -582,7 +582,7 @@ def collect_metadata_sources(classes, by_full, by_name):
     return out
 
 
-def collect_asset_sources(project_dir, templates):
+def collect_asset_sources(project_dir, templates, include_mods=True):
     """`assets/shaders/**` (and any mod shader files that are present at build time)."""
     assets_dir = os.path.join(project_dir, 'assets')
     if not os.path.isdir(assets_dir):
@@ -603,9 +603,10 @@ def collect_asset_sources(project_dir, templates):
         out.append(AotSource('asset:assets/shaders/%s/vertex' % stem, 'asset', 'vertex', assembled['vertex']))
         out.append(AotSource('asset:assets/shaders/%s/fragment' % stem, 'asset', 'fragment', assembled['fragment']))
 
-    # mods: same loader, files simply live below `mods/`
+    # mods: same loader, files simply live below `mods/`.  Excluded by default: the cache
+    # mirrors what the original engine ships, mod shaders are translated at runtime.
     mods_dir = os.path.join(project_dir, 'mods')
-    if os.path.isdir(mods_dir):
+    if include_mods and os.path.isdir(mods_dir):
         mod_pairs = {}
         for dirpath, dirnames, filenames in os.walk(mods_dir):
             dirnames[:] = [d for d in dirnames if not d.startswith('.')]
@@ -631,7 +632,7 @@ def _read(path):
         return fh.read()
 
 
-def build_sources(project_dir, roots=None):
+def build_sources(project_dir, roots=None, include_mods=True):
     roots = roots_from_hxml(project_dir) or roots or default_roots(project_dir)
     seen = set()
     unique = []
@@ -649,5 +650,5 @@ def build_sources(project_dir, roots=None):
     by_full, by_name = make_index(classes, typedefs)
     templates = parse_shader_templates(os.path.join(project_dir, 'source/funkin/backend/shaders/FunkinShader.hx'))
     sources = collect_metadata_sources(classes, by_full, by_name)
-    sources += collect_asset_sources(project_dir, templates)
+    sources += collect_asset_sources(project_dir, templates, include_mods=include_mods)
     return sources, classes, roots

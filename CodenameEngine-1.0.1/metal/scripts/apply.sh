@@ -88,13 +88,19 @@ echo "  [1/6] native sources -> project/src/graphics/metal/"
 if [ "$DO_AOT" = "1" ]; then
 	AOT_ARGS=(--project "$PROJECT_DIR")
 	[ "$DO_METALLIB" = "1" ] || AOT_ARGS+=(--skip-metallib)
-	# Runtime-composed shaders (mod scripts, generated variants) can never be enumerated
-	# statically.  ShaderAot.onMiss() dumps each miss to /tmp/cne-aot-missing; when such a
-	# session has happened, bake those exact sources into the cache on the next build.
+	# The cache mirrors the original engine (bundled assets + engine classes).  Mod shaders
+	# and runtime-composed sources are NOT baked by default: they are translated when the
+	# game runs.  Opt in when you explicitly want a build-time bake:
+	#   CNE_AOT_INCLUDE_MODS=1     also cache project mods/ shaders
+	#   CNE_AOT_INCLUDE_MISSES=1   also cache ShaderAot.onMiss() dumps
+	if [ "${CNE_AOT_INCLUDE_MODS:-0}" = "1" ]; then
+		AOT_ARGS+=(--include-mods)
+		echo "  [1b/6] including mods/ shaders in the AOT cache (CNE_AOT_INCLUDE_MODS=1)"
+	fi
 	MISSES_DIR="${CNE_AOT_MISSES_DIR:-/tmp/cne-aot-missing}"
-	if [ "${CNE_AOT_NO_MISSES:-0}" != "1" ] && [ -d "$MISSES_DIR" ] 	&& [ -n "$(find "$MISSES_DIR" -maxdepth 1 -name '*.glsl' -print -quit 2>/dev/null)" ]; then
+	if [ "${CNE_AOT_INCLUDE_MISSES:-0}" = "1" ]; then
 		AOT_ARGS+=(--include-misses --misses-dir "$MISSES_DIR")
-		echo "  [1b/6] baking runtime-composed shader sources from $MISSES_DIR"
+		echo "  [1b/6] baking runtime-composed shader sources from $MISSES_DIR (CNE_AOT_INCLUDE_MISSES=1)"
 	fi
 	python3 "$HERE/gen_shader_aot.py" "${AOT_ARGS[@]}" || {
 		echo "error: AOT shader cache generation failed" >&2; exit 1; }
