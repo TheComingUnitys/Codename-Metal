@@ -2014,8 +2014,23 @@ namespace lime {
 					}
 				}
 			}
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] flushpre view=%u prog=%u state=%llx idx=%d first=%u count=%u\n",
+					(unsigned)gOpenDraw.view, (unsigned)gOpenDraw.program.idx,
+					(unsigned long long)gOpenDraw.state,
+					gOpenRanges.empty () ? -1 : gOpenRanges.front ().handleIdx,
+					gOpenRanges.empty () ? 0u : gOpenRanges.front ().first,
+					gOpenRanges.empty () ? 0u : gOpenRanges.front ().count);
+				std::fflush (stderr);
+			}
 			bgfx::setState (gOpenDraw.state);
 			bgfx::submit (gOpenDraw.view, gOpenDraw.program);
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] flushpost\n");
+				std::fflush (stderr);
+			}
 			gOpenRanges.clear ();
 			gOpenDraw.valid = false;
 			gOpenMergeKey.valid = false;
@@ -2108,6 +2123,12 @@ namespace lime {
 			if (idb.data == nullptr) return false;
 			std::memcpy (idb.data, data.data (), data.size () * sizeof (float));
 			bgfx::setInstanceDataBuffer (&idb, 0, (uint32_t)numInstances);
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				std::fprintf (stderr, "[cne-trace] instanceData prog=%d slots=%d filled=%d instances=%d\n",
+					MetalContext::state.currentProgram, slots, filled, numInstances);
+				std::fflush (stderr);
+			}
 			return true;
 		}
 
@@ -2212,14 +2233,6 @@ namespace lime {
 			}
 
 			int locations[32];
-			if (gTraceDraws && gTraceCount < 200)
-			{
-				std::fprintf (stderr, "[cne-trace] f=%u bind prog=%d fbo=%d streams=%d attrs=%zu\n",
-					metal::gFrameIndex, MetalContext::state.currentProgram,
-					MetalContext::state.currentFramebuffer, stream, vao->attribs.size ());
-				std::fflush (stderr);
-			}
-
 			// [cne-instance] divisor>0 attributes are fed through bgfx's instance data buffer;
 			// they are excluded from the per-vertex stream grouping below.
 			SetupInstanceData (vao, (int)gPendingInstances);
@@ -2940,6 +2953,23 @@ namespace lime {
 				}
 
 				++stream;
+			}
+
+			if (gTraceDraws && gTraceCount < 200)
+			{
+				int enabledCount = 0, hitCount = 0, divCount = 0;
+				for (auto& ta : vao->attribs)
+				{
+					if (!ta.second.enabled) continue;
+					++enabledCount;
+					if (ta.second.divisor > 0) ++divCount;
+					if (buffers.find (ta.second.buffer) != buffers.end ()) ++hitCount;
+				}
+				std::fprintf (stderr, "[cne-trace] f=%u bind prog=%d fbo=%d streams=%d attrs=%zu enabled=%d bufhits=%d divs=%d entry=%d cap=%d\n",
+					metal::gFrameIndex, MetalContext::state.currentProgram,
+					MetalContext::state.currentFramebuffer, stream, vao->attribs.size (),
+					enabledCount, hitCount, divCount, entryCount, realStreamCap);
+				std::fflush (stderr);
 			}
 
 			// ------------------------------------------------------------------ constants
@@ -5027,6 +5057,7 @@ namespace lime {
 		if (values == nullptr) return;
 
 		++uniform->writeCount;   // [cne-shader-audit] runtime coverage
+		uniform->dirty = true;    // per-draw matrices must upload even after the frame's full pass
 
 		if (count < 1) count = 1;
 
@@ -5121,6 +5152,7 @@ namespace lime {
 		if (values == nullptr) return;
 
 		++uniform->writeCount;   // [cne-shader-audit] runtime coverage
+		uniform->dirty = true;    // per-draw matrices must upload even after the frame's full pass
 
 		for (int i = 0; i < count; ++i)
 		{
@@ -7580,13 +7612,14 @@ namespace lime {
 				return;
 			}
 
-			if (numInstances > 1)
+			// The instance count is carried by setInstanceDataBuffer()/setInstanceCount();
+			// passing it as submit's fourth argument would be interpreted as discard flags.
+			{ ProfScope profSub (&gProfBgfxSubmitUs); bgfx::submit (view, program->handle); }
+			if (gTraceDraws && gTraceCount < 200)
 			{
-				{ ProfScope profSub (&gProfBgfxSubmitUs); bgfx::submit (view, program->handle, 0, numInstances); }
-			}
-			else
-			{
-				{ ProfScope profSub (&gProfBgfxSubmitUs); bgfx::submit (view, program->handle); }
+				std::fprintf (stderr, "[cne-trace] f=%u submitted prog=%d view=%u\n",
+					metal::gFrameIndex, MetalContext::state.currentProgram, (unsigned)view);
+				std::fflush (stderr);
 			}
 
 			// [cne-copy] CNE_METAL_SHOW_WORLDCORNER=1: submit the corner observation into the

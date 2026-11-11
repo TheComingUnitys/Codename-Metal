@@ -127,6 +127,7 @@ namespace {
 		if (uniform == nullptr || values == nullptr) return;
 
 		++uniform->writeCount;   // [cne-shader-audit] runtime coverage
+		uniform->dirty = true;    // per-draw matrices must upload even after the frame's full pass
 
 		const uint32_t matrixStride = (uint32_t)columns * 16;   // every column is float4-aligned
 		const uint32_t sourceStride = (uint32_t)columns * (uint32_t)rows;

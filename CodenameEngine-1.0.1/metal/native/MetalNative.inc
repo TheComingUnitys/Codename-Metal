@@ -574,6 +574,7 @@
 		if (values == nullptr) return;
 
 		++uniform->writeCount;   // [cne-shader-audit] runtime coverage
+		uniform->dirty = true;    // per-draw matrices must upload even after the frame's full pass
 
 		// The staging buffer is sized from the shader reflection; when that reflection
 		// under-reports a matrix (it happens for some programs) the old `64 <= size` guard

@@ -916,6 +916,16 @@ namespace metal {
 	void MetalContext::Frame ()
 	{
 		if (!created) return;
+		static const bool traceFrameEntry = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_TRACE");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
+		if (traceFrameEntry)
+		{
+			std::fprintf (stderr, "[cne-trace] frame%u enter\n", gFrameIndex);
+			std::fflush (stderr);
+		}
 
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the
 		// CAMetalLayer for a while.  Coming back left the world black (HUD, drawn straight to
@@ -953,6 +963,7 @@ namespace metal {
 			lastHidden = hidden;
 			lastFocused = focused;
 		}
+		if (traceFrameEntry) { std::fprintf (stderr, "[cne-trace] visibility done\n"); std::fflush (stderr); }
 
 		// [cne-startup-reset] The first state after launch can create its render targets while
 		// the drawable is still settling; some layers (extra FlxCamera canvases: Boyfriend's
@@ -1002,6 +1013,8 @@ namespace metal {
 			std::fflush (stderr);
 		}
 
+		if (traceFrameEntry) { std::fprintf (stderr, "[cne-trace] resize poll\n"); std::fflush (stderr); }
+
 		// [cne-resize] Dragging the window never calls MetalContext::Resize (Lime only uses
 		// that at startup), so the swap chain kept its original size and every offscreen
 		// render target went stale - the world disappeared after a resize while the HUD (drawn
@@ -1020,11 +1033,19 @@ namespace metal {
 					std::fprintf (stderr, "[cne-resize] drawable %dx%d -> %dx%d (bgfx::reset)\n",
 						lastDrawableWidth, lastDrawableHeight, drawableWidth, drawableHeight);
 					std::fflush (stderr);
+					if (traceFrameEntry) { std::fprintf (stderr, "[cne-trace] resize begin\n"); std::fflush (stderr); }
 					ResizeDrawable (drawableWidth, drawableHeight);
+					if (traceFrameEntry) { std::fprintf (stderr, "[cne-trace] resize done\n"); std::fflush (stderr); }
 				}
 				lastDrawableWidth = drawableWidth;
 				lastDrawableHeight = drawableHeight;
 			}
+		}
+
+		if (traceFrameEntry)
+		{
+			std::fprintf (stderr, "[cne-trace] frame postresize\n");
+			std::fflush (stderr);
 		}
 
 		// [cne-hitch-detail] CNE_METAL_HITCH_DETAIL=1: split a slow frame into its four
@@ -1214,6 +1235,17 @@ namespace metal {
 			}
 		}
 
+		static const bool traceFrame = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_TRACE");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
+		if (traceFrame)
+		{
+			std::fprintf (stderr, "[cne-trace] frame%u order-end\n", frameIndex);
+			std::fflush (stderr);
+		}
+
 		const double submitStartMs = SinceProcessStartMs ();
 		metal::ApplyFrameViewOrder ();
 		const double submitMs = SinceProcessStartMs () - submitStartMs;
@@ -1221,7 +1253,17 @@ namespace metal {
 		const bool captureScreen = gScreenCaptureRequested;
 		if (captureScreen) bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels-cache");
 
+		if (traceFrame)
+		{
+			std::fprintf (stderr, "[cne-trace] frame%u before bgfx::frame\n", frameIndex);
+			std::fflush (stderr);
+		}
 		bgfx::frame ();
+		if (traceFrame)
+		{
+			std::fprintf (stderr, "[cne-trace] frame%u after bgfx::frame\n", frameIndex);
+			std::fflush (stderr);
+		}
 		metal::DumpFilterPassesAfterFrame ();
 		const double presentMs = SinceProcessStartMs () - submitStartMs - submitMs;
 
@@ -1378,11 +1420,6 @@ namespace metal {
 
 		if (!created) return;
 
-		// Keep the CAMetalLayer's drawable size / contents scale in sync when the window moves
-		// between Retina and non-Retina displays (the initial configure happens once at startup).
-		if (layer != nullptr)
-			cne_mtl_configure_layer (layer, dpiWidth, dpiHeight, cne_mtl_window_scale (sdlWindowRef));
-
 		bgfx::SwapChain swapChain;
 		swapChain.nwh = layer;
 		swapChain.width = (uint32_t)dpiWidth;
@@ -1416,9 +1453,6 @@ namespace metal {
 		state.viewport[3] = drawableHeight;
 
 		if (!created) return;
-
-		if (layer != nullptr)
-			cne_mtl_configure_layer (layer, drawableWidth, drawableHeight, cne_mtl_window_scale (sdlWindowRef));
 
 		bgfx::SwapChain swapChain;
 		swapChain.nwh = layer;
