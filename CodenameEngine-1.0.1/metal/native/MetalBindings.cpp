@@ -433,6 +433,9 @@ namespace lime {
 			// per frame (one dialogue frame measured 11.4 s) and the screen stayed black.
 			int failedForTexture = -1;
 			int pendingTexture = -1;   // rebind requested mid-frame; applied at the next frame
+			// [cne-clear] true once any draw targeting this framebuffer used depth/stencil, so
+			// the clear can skip the depth+stencil surface for plain 2D canvases.
+			bool needsDepthStencil = false;
 
 			// One bgfx framebuffer per (GL framebuffer, colour attachment) pair.  GL re-attaches
 			// a different texture to the same framebuffer id while ping-ponging filter passes;
@@ -575,6 +578,48 @@ namespace lime {
 		static uint32_t gBoundTexVersion = 1;
 		// [cne-fastpath] bumps whenever a bgfx framebuffer handle may have been retired.
 		static uint32_t gFboCacheGeneration = 1;
+
+		// [cne-depthpool] Offscreen passes almost always need a D24S8 attachment but only one
+		// depth/stencil surface size at a time; sharing one per (width,height) avoids creating
+		// (and clearing) a fresh depth texture per render target.  Every pass clears depth at
+		// the start of its view, so sharing across framebuffers is safe.
+		struct DepthPoolEntry
+		{
+			bgfx::TextureHandle handle = bgfx::TextureHandle ();
+			int refs = 0;
+		};
+		static std::map<uint64_t, DepthPoolEntry> gDepthPool;
+		static inline uint64_t DepthKey (int w, int h)
+		{
+			return ((uint64_t)(uint32_t)w << 32) | (uint32_t)h;
+		}
+		static inline bgfx::TextureHandle AcquireDepth (int w, int h)
+		{
+			if (w <= 0 || h <= 0) return bgfx::TextureHandle ();
+			DepthPoolEntry& e = gDepthPool[DepthKey (w, h)];
+			if (!bgfx::isValid (e.handle))
+			{
+				e.handle = bgfx::createTexture2D ((uint16_t)w, (uint16_t)h, false, 1,
+					bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT, nullptr);
+			}
+			if (bgfx::isValid (e.handle)) ++e.refs;
+			return e.handle;
+		}
+		static inline void ReleaseDepth (bgfx::TextureHandle handle)
+		{
+			if (!bgfx::isValid (handle)) return;
+			for (auto& e : gDepthPool)
+			{
+				if (e.second.handle.idx != handle.idx) continue;
+				if (e.second.refs > 0) --e.second.refs;
+				if (e.second.refs == 0)
+				{
+					if (bgfx::isValid (e.second.handle)) bgfx::destroy (e.second.handle);
+					e.second.handle = bgfx::TextureHandle ();
+				}
+				return;
+			}
+		}
 		static int gBoundTexIds[32] = {0};
 		inline void NoteBoundTexture (int unit, int textureId)
 		{
@@ -4788,7 +4833,7 @@ namespace lime {
 				}
 				for (auto& entry : fb.second.attachmentDepths)
 				{
-					if (bgfx::isValid (entry.second)) bgfx::destroy (entry.second);
+					ReleaseDepth (entry.second);
 				}
 				fb.second.attachmentHandles.clear ();
 				fb.second.attachmentDepths.clear ();
@@ -4825,7 +4870,7 @@ namespace lime {
 				auto d = fb.second.attachmentDepths.find (textureId);
 				if (d != fb.second.attachmentDepths.end ())
 				{
-					if (bgfx::isValid (d->second)) bgfx::destroy (d->second);
+					ReleaseDepth (d->second);
 					fb.second.attachmentDepths.erase (d);
 				}
 				if (fb.second.texture == textureId)
@@ -4932,9 +4977,7 @@ namespace lime {
 					// for the offscreen passes, and on Metal a pipeline with depth testing but
 					// no depth attachment discards every fragment - the world was drawn but
 					// never visible (HUD renders in a different view without depth).
-					depth = bgfx::createTexture2D (
-						(uint16_t)tex->second.width, (uint16_t)tex->second.height, false, 1,
-						bgfx::TextureFormat::D24S8, BGFX_TEXTURE_RT, nullptr);
+					depth = AcquireDepth (tex->second.width, tex->second.height);
 					fb.attachmentDepths[fb.texture] = depth;
 				}
 
@@ -5166,7 +5209,7 @@ namespace lime {
 						}
 						for (auto& entry : fb.second.attachmentDepths)
 						{
-							if (bgfx::isValid (entry.second)) bgfx::destroy (entry.second);
+							ReleaseDepth (entry.second);
 						}
 						fb.second.attachmentHandles.clear ();
 						fb.second.attachmentDepths.clear ();
@@ -5251,7 +5294,7 @@ namespace lime {
 						for (auto d = fb.second.attachmentDepths.begin (); d != fb.second.attachmentDepths.end (); )
 						{
 							if (textures.find (d->first) != textures.end ()) { ++d; continue; }
-							if (bgfx::isValid (d->second)) bgfx::destroy (d->second);
+							ReleaseDepth (d->second);
 							d = fb.second.attachmentDepths.erase (d);
 						}
 					}
@@ -5573,10 +5616,17 @@ namespace lime {
 					if (v == nullptr) return true;
 					return !(v[0] == '0' && v[1] == '\0');
 				} ();
-				const uint16_t clearFlags = rtTransparentClear
-					? (BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL)
-					: (BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL);
-				CachedViewClear (view, MetalContext::state.currentFramebuffer, clearFlags, 0x00000000, 1.0f, 0);
+				auto clearFb = framebuffers.find (MetalContext::state.currentFramebuffer);
+				if (clearFb != framebuffers.end ()
+				&&  (MetalContext::state.depthTest || MetalContext::state.depthWrite || MetalContext::state.stencilTest))
+				{
+					clearFb->second.needsDepthStencil = true;
+				}
+				const bool needsDepthStencil = clearFb != framebuffers.end () && clearFb->second.needsDepthStencil;
+				const uint16_t clearFlags = (uint16_t)((rtTransparentClear ? BGFX_CLEAR_COLOR : 0)
+					| (needsDepthStencil ? (BGFX_CLEAR_DEPTH | BGFX_CLEAR_STENCIL) : 0));
+				if (clearFlags != 0)
+					CachedViewClear (view, MetalContext::state.currentFramebuffer, clearFlags, 0x00000000, 1.0f, 0);
 			}
 
 			const int targetW = CurrentTargetWidth ();
@@ -7303,7 +7353,7 @@ namespace lime {
 			}
 			for (auto& entry : it->second.attachmentDepths)
 			{
-				if (bgfx::isValid (entry.second)) bgfx::destroy (entry.second);
+				ReleaseDepth (entry.second);
 			}
 		}
 		framebuffers.erase (framebuffer);
