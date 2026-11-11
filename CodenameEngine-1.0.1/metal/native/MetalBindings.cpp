@@ -1560,7 +1560,7 @@ namespace lime {
 		/** Same idea as the vertex cache: an index buffer per draw leaks handles. */
 		struct IndexBufferSlot
 		{
-			bgfx::DynamicIndexBufferHandle dynamic = BGFX_INVALID_HANDLE;
+			bgfx::IndexBufferHandle handle = BGFX_INVALID_HANDLE;
 			uint64_t signature = 0;
 			uint32_t size = 0;
 			uint32_t revision = 0xFFFFFFFFu;
@@ -1627,12 +1627,14 @@ namespace lime {
 		// index buffer (revision change / delete) must also drop merged buffers built from it.
 		static inline void InvalidateMergedIndexForSource (int handleIdx);
 
-		bgfx::DynamicIndexBufferHandle CachedIndexBuffer (uint32_t bufferId,
+		bgfx::IndexBufferHandle CachedIndexBuffer (uint32_t bufferId,
 			const std::vector<uint8_t>& bytes, uint32_t revision, uint16_t flags)
 		{
 			IndexBufferSlot& slot = indexBufferSlots[bufferId];
 
-			// Layout key = format + size; the revision separately drives in-place updates.
+			// The revision is part of the key: a dynamic buffer reused across draws would
+			// be overwritten while earlier draws of the same frame are still pending
+			// (bgfx submits at frame end), so changed index data gets a new buffer.
 			uint64_t h = 1469598103934665603ull;
 			auto mix = [&h] (const void* p, size_t n)
 			{
@@ -1642,28 +1644,23 @@ namespace lime {
 			mix (&flags, sizeof (flags));
 			const uint32_t byteSize = (uint32_t)bytes.size ();
 			mix (&byteSize, sizeof (byteSize));
+			mix (&revision, sizeof (revision));
 
-			if (slot.dynamic.idx == bgfx::kInvalidHandle || slot.signature != h || slot.size != byteSize)
+			if (slot.handle.idx == bgfx::kInvalidHandle || slot.signature != h || slot.size != byteSize)
 			{
-				if (slot.dynamic.idx != bgfx::kInvalidHandle)
+				if (slot.handle.idx != bgfx::kInvalidHandle)
 				{
-					InvalidateMergedIndexForSource (slot.dynamic.idx);
-					bgfx::destroy (slot.dynamic);
+					InvalidateMergedIndexForSource (slot.handle.idx);
+					bgfx::destroy (slot.handle);
 				}
-				slot.dynamic = bgfx::createDynamicIndexBuffer (
+				slot.handle = bgfx::createIndexBuffer (
 					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize), flags);
 				slot.signature = h;
 				slot.size = byteSize;
 				slot.revision = revision;
 			}
-			else if (slot.revision != revision)
-			{
-				bgfx::update (slot.dynamic, 0,
-					bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize));
-				slot.revision = revision;
-			}
 
-			return slot.dynamic;
+			return slot.handle;
 		}
 
 		/**
@@ -1694,7 +1691,7 @@ namespace lime {
 		// Values of the draw currently being prepared (set by the draw entry points before
 		// BindVertexStreams; the bgfx index buffer is bound there).
 		static bool gPendingIndexed = false;
-		static bgfx::DynamicIndexBufferHandle gPendingIndex = bgfx::DynamicIndexBufferHandle ();
+		static bgfx::IndexBufferHandle gPendingIndex = bgfx::IndexBufferHandle ();
 		static uint32_t gPendingFirst = 0;
 		static uint32_t gPendingCount = 0;
 		static uint32_t gPendingIndexRevision = 0;
@@ -1889,7 +1886,7 @@ namespace lime {
 			bool valid = false;
 			bgfx::ProgramHandle program = bgfx::ProgramHandle ();
 			uint16_t view = 0;
-			bgfx::DynamicIndexBufferHandle index = bgfx::DynamicIndexBufferHandle ();
+			bgfx::IndexBufferHandle index = bgfx::IndexBufferHandle ();
 			uint32_t first = 0;
 			uint32_t count = 0;
 			uint64_t state = 0;
@@ -1936,7 +1933,7 @@ namespace lime {
 				if (gOpenRanges.size () == 1)
 				{
 					const MergeRange& r = gOpenRanges.front ();
-					bgfx::DynamicIndexBufferHandle h = bgfx::DynamicIndexBufferHandle ();
+					bgfx::IndexBufferHandle h = bgfx::IndexBufferHandle ();
 					h.idx = (uint16_t)r.handleIdx;
 					if (bgfx::isValid (h)) bgfx::setIndexBuffer (h, r.first, r.count);
 				}
@@ -1956,7 +1953,7 @@ namespace lime {
 						bgfx::setState (gOpenDraw.state);
 						for (const MergeRange& r : gOpenRanges)
 						{
-							bgfx::DynamicIndexBufferHandle h = bgfx::DynamicIndexBufferHandle ();
+							bgfx::IndexBufferHandle h = bgfx::IndexBufferHandle ();
 							h.idx = (uint16_t)r.handleIdx;
 							if (bgfx::isValid (h)) bgfx::setIndexBuffer (h, r.first, r.count);
 							bgfx::submit (gOpenDraw.view, gOpenDraw.program);
@@ -2850,12 +2847,17 @@ namespace lime {
 					mixLayout (&off, sizeof (off));
 				}
 
-				if (slot.dynamic.idx == bgfx::kInvalidHandle
+				// A reused dynamic buffer would be overwritten while earlier draws of the same
+				// frame are still pending (bgfx submits at frame end), so changed data gets a
+				// new buffer and the revision is part of the cache key.
+				layoutHash = MergeHashBytes (layoutHash, &bufferRevision, sizeof (bufferRevision));
+
+				if (slot.handle.idx == bgfx::kInvalidHandle
 				||  slot.signature != layoutHash
 				||  slot.size != byteSize)
 				{
-					if (slot.dynamic.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.dynamic);
-					slot.dynamic = bgfx::createDynamicVertexBuffer (
+					if (slot.handle.idx != bgfx::kInvalidHandle) bgfx::destroy (slot.handle);
+					slot.handle = bgfx::createVertexBuffer (
 						bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize), layout);
 					slot.signature = layoutHash;
 					slot.size = byteSize;
@@ -2865,17 +2867,11 @@ namespace lime {
 					{
 						std::fprintf (stderr, "[cne-dbg] vb cache MISS buffer=%d size=%u stride=%u handle=%u\n",
 							(int)entry.first, (unsigned)bytes.size (),
-							(unsigned)layout.getStride (), (unsigned)slot.dynamic.idx);
+							(unsigned)layout.getStride (), (unsigned)slot.handle.idx);
 					}
 				}
-				else if (slot.revision != bufferRevision)
-				{
-					bgfx::update (slot.dynamic, 0,
-						bgfx::copy (bytes.empty () ? nullptr : bytes.data (), byteSize));
-					slot.revision = bufferRevision;
-				}
 
-				if (slot.dynamic.idx != bgfx::kInvalidHandle)
+				if (slot.handle.idx != bgfx::kInvalidHandle)
 				{
 					// `streamStartVertex` already encodes the group's base offset (it is
 					// `baseOffset / stride` for interleaved groups and 0 for the
@@ -2883,7 +2879,7 @@ namespace lime {
 					cne_capture::AddStream ((int)stream, layout,
 						streamBytes->empty () ? nullptr : streamBytes->data (), streamBytes->size (),
 						streamStartVertex);
-					bgfx::setVertexBuffer ((uint8_t)stream, slot.dynamic, streamStartVertex, UINT32_MAX);
+					bgfx::setVertexBuffer ((uint8_t)stream, slot.handle, streamStartVertex, UINT32_MAX);
 				}
 
 				++stream;
@@ -5221,8 +5217,8 @@ namespace lime {
 			auto ib = indexBufferSlots.find ((uint32_t)buffer);
 			if (ib != indexBufferSlots.end ())
 			{
-				if (bgfx::isValid (ib->second.dynamic)) InvalidateMergedIndexForSource (ib->second.dynamic.idx);
-				if (bgfx::isValid (ib->second.dynamic)) bgfx::destroy (ib->second.dynamic);
+				if (bgfx::isValid (ib->second.handle)) InvalidateMergedIndexForSource (ib->second.handle.idx);
+				if (bgfx::isValid (ib->second.handle)) bgfx::destroy (ib->second.handle);
 				indexBufferSlots.erase (ib);
 			}
 		}
@@ -7615,7 +7611,7 @@ namespace lime {
 
 		uint16_t flags = (type == GL_UNSIGNED_SHORT) ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
 
-		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		cne_capture::SetIndexBytes (buffer->second.bytes.empty () ? nullptr : buffer->second.bytes.data (),
@@ -7679,7 +7675,7 @@ namespace lime {
 		if (buffer == buffers.end ()) return;
 
 		uint16_t flags = (type == GL_UNSIGNED_SHORT) ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
-		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		const uint32_t elementSize = (type == GL_UNSIGNED_SHORT) ? 2u : 4u;

@@ -746,7 +746,7 @@
 		const uint32_t firstIndex = (uint32_t)(byteOffset / (int)elementSize);
 		const uint16_t flags = isShort ? BGFX_BUFFER_NONE : BGFX_BUFFER_INDEX32;
 
-		bgfx::DynamicIndexBufferHandle indexHandle = CachedIndexBuffer (
+		bgfx::IndexBufferHandle indexHandle = CachedIndexBuffer (
 			(uint32_t)elementBufferId, buffer->second.bytes, buffer->second.revision, flags);
 
 		cne_capture::SetIndexBytes (buffer->second.bytes.empty () ? nullptr : buffer->second.bytes.data (),

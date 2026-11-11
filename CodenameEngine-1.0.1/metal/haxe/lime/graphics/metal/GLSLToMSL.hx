@@ -88,6 +88,10 @@ class GLSLToMSL
 
 	// collected declarations
 	var attributes:Array<AttrInfo> = [];
+	// [cne-instance] only emit the Metal system inputs an actually-used built-in needs;
+	// adding them to every vertex shader changed every AOT shader for no benefit.
+	var usesInstanceID = false;
+	var usesVertexID = false;
 	var varyings:Array<{name:String, glslType:String, mslType:String, arrayLen:Int}> = [];
 	var varyingNames = new Map<String, Bool> ();
 	// Local/parameter types, collected with a light pre-pass.  Needed for GLSL's
@@ -949,13 +953,13 @@ class GLSLToMSL
 						i++;
 						continue;
 					case 'gl_InstanceID':
-						if (isVertex) { out.add('xlatInstanceID'); i++; continue; }
+						if (isVertex) { usesInstanceID = true; out.add('xlatInstanceID'); i++; continue; }
 						errors.push('Unsupported built-in: ' + t.text);
 						out.add(t.text);
 						i++;
 						continue;
 					case 'gl_VertexID':
-						if (isVertex) { out.add('xlatVertexID'); i++; continue; }
+						if (isVertex) { usesVertexID = true; out.add('xlatVertexID'); i++; continue; }
 						errors.push('Unsupported built-in: ' + t.text);
 						out.add(t.text);
 						i++;
@@ -1532,6 +1536,7 @@ class GLSLToMSL
 			{
 				if (isVertex)
 				{
+					if (t.text == 'gl_InstanceID') usesInstanceID = true; else usesVertexID = true;
 					out.add(t.text == 'gl_InstanceID' ? 'xlatInstanceID' : 'xlatVertexID');
 					i++;
 					continue;
@@ -2914,10 +2919,10 @@ class GLSLToMSL
 		{
 			parts.push('const XlatMtlVertexIn xlatIn [[stage_in]]');
 			// [cne-instance] GLSL gl_InstanceID / gl_VertexID need explicit Metal system
-			// inputs; declaring them unconditionally is valid even for non-instanced draws
-			// (instance id is 0 then).
-			parts.push('uint xlatInstanceID [[instance_id]]');
-			parts.push('uint xlatVertexID [[vertex_id]]');
+			// inputs; only emit them when the shader uses them so ordinary AOT shaders keep
+			// their previous MSL.
+			if (usesInstanceID) parts.push('uint xlatInstanceID [[instance_id]]');
+			if (usesVertexID) parts.push('uint xlatVertexID [[vertex_id]]');
 		}
 		else
 		{
