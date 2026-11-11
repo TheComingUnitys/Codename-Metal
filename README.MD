@@ -165,7 +165,25 @@ cd CodenameEngine-1.0.1
 
 > Intel build: `BGFX_ARCHS=osx-x64 ./metal/scripts/build-bgfx.sh`.
 
+### 5.5 OpenFL / Flixel Metal forks (instanced batching)
+
+> Forks used by this backend (instanced bitmap batching, Metal native-path shims):
+> **https://github.com/TheComingUnitys/openfl-metal** and
+> **https://github.com/TheComingUnitys/flixel-metal**.
+
+```sh
+git clone https://github.com/TheComingUnitys/openfl-metal ../openfl-metal
+git clone https://github.com/TheComingUnitys/flixel-metal ../flixel-metal
+cd CodenameEngine-1.0.1
+haxelib dev openfl ../../openfl-metal    # adjust the relative path
+haxelib dev flixel ../../flixel-metal
+```
+
+The `metal_instancing` define is enabled for the Metal target in `project.xml`; disable the
+optimization at runtime with `FlxG.metalInstancing = false` or rebuild without the define.
+
 ---
+
 
 ## 6. Build
 

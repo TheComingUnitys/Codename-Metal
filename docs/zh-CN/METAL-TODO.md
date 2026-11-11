@@ -10,12 +10,13 @@
 
 ## 未完成的优化（记录）
 
-- **D38 draw 合并剩余部分**：连续与**非连续**索引范围（同 index buffer 或不同 index buffer）
-  已经通过合并索引缓存实现（单 draw 上限 64 段 / 300 万索引；缓存上限 128 项 / 8 MB）。
-  逐 draw 的诊断路径（`cne_capture`、`CNE_METAL_SHOW_WORLDCORNER`）看不到被合并的 draw。
-  后端侧的 instancing 已就绪：GLSL `gl_InstanceID` / `gl_VertexID` 翻译为 Metal 的
-  `[[instance_id]]` / `[[vertex_id]]`，`glDraw*Instanced` 已转发 instance count；真正基于
-  per-instance 属性的批处理仍需 OpenFL/Flixel 在批处理层输出 instance 数据。
+- **D38**：已完成。连续/非连续索引范围通过合并索引缓存合并；**instanced bitmap 批处理**
+  已在 [openfl-metal](https://github.com/TheComingUnitys/openfl-metal) 与
+  [flixel-metal](https://github.com/TheComingUnitys/flixel-metal) fork 中实现
+  （`InstancedDisplayObjectShader` + `MetalInstanceBatch`，`FlxG.metalInstancing`）；
+  后端把 `i_data0..15` 属性映射到 bgfx instance data buffer，并实现
+  `glVertexAttribDivisor`。逐 draw 的诊断（`cne_capture`、`CNE_METAL_SHOW_WORLDCORNER`）
+  仍看不到批内细节。
 
 剩余工作属于**多天架构/可选项目**，统一记录在
 [README 的 Roadmap](../../README.MD#11-future-work--roadmap-not-scheduled)：

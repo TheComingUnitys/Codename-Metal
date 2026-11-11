@@ -15,14 +15,15 @@ engine corpus; mod shaders are translated at runtime) (verified by
 
 ## Unfinished optimizations (recorded)
 
-- **D38 draw merging - remaining part**: contiguous *and* non-contiguous index ranges (same
-  or different index buffers) are merged through the merged-index cache (bounded to 64
-  ranges and 3M indices per draw; cache capped at 128 entries / 8 MB).  Diagnostics that
-  record individual draws (`cne_capture`, `CNE_METAL_SHOW_WORLDCORNER`) do not see merged
-  draws.  Backend-side instancing support is now in place: GLSL `gl_InstanceID` and
-  `gl_VertexID` translate to Metal's `[[instance_id]]` / `[[vertex_id]]`, and
-  `glDraw*Instanced` already forwards the instance count.  True per-instance-attribute
-  batching still needs OpenFL/Flixel to emit instance data from its batching layer.
+- **D38**: complete.  Contiguous and non-contiguous index ranges are merged through the
+  merged-index cache; **instanced bitmap batching** is implemented in the
+  [openfl-metal](https://github.com/TheComingUnitys/openfl-metal) and
+  [flixel-metal](https://github.com/TheComingUnitys/flixel-metal) forks
+  (`InstancedDisplayObjectShader` + `MetalInstanceBatch`, `FlxG.metalInstancing`).  The
+  native backend maps `i_data0..15` attributes to bgfx's instance data buffer and
+  implements `glVertexAttribDivisor`.
+  Diagnostics that record individual draws (`cne_capture`, `CNE_METAL_SHOW_WORLDCORNER`)
+  still do not see per-batch details.
 
 The remaining work is **multi-day architectural / optional** and is tracked in the
 [roadmap in README.md](../README.MD#11-future-work-roadmap-not-scheduled): Metal-native
