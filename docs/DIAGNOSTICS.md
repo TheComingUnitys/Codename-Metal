@@ -127,6 +127,12 @@ opt in when you want a build-time bake:
   (`--include-misses`);
 - `CNE_AOT_MISSES_DIR=<dir>` - use a different dump directory.
 
+Runtime translation results are memoized in-process by cache key: re-creating the same mod
+shader does not translate or compile it again.  The `[cne-aot] EXIT` line reports
+`runtimeCacheHits` next to `runtimeTranslations`.  The **first** runtime translation of a
+source still calls `newLibraryWithSource` synchronously on the render thread, which is a
+one-off hitch when a mod state is entered; `CNE_METAL_HITCH=1` reports it.
+
 ## 3. Frame capture + direct-Metal replay (A/B prototype)
 
 ```sh

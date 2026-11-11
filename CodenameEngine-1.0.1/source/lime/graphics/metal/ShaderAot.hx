@@ -89,6 +89,10 @@ class ShaderAot
 	// 2^57, so nothing overflows and the result is exactly FNV-1a-32 / DJB2-32 mod 2^32.
 
 	static var MASK32:haxe.Int64 = haxe.Int64.make(0, -1); // 0x00000000FFFFFFFF
+	/** [cne-aot] in-process memo of runtime-translated mod shaders, keyed by `hash()`. */
+	static var runtimeCache:Map<String, ShaderAotEntry>;
+	/** number of runtime translations served from `runtimeCache`. */
+	public static var runtimeCacheHits:Int = 0;
 
 	static function fnv1a(bytes:haxe.io.Bytes):Int
 	{
@@ -118,11 +122,26 @@ class ShaderAot
 		return h.low;
 	}
 
-	/** Cache key for one shader stage.  Must match `gen_shader_aot.py:key_of`. */
+	/** Cache key for one shader stage.  Must match `gen_shader_aot.py:key_of`.
+		Both hashes are updated in a single pass over the bytes: the previous implementation
+		walked the (often multi-KB) shader source twice on every lookup. */
 	public static function hash(source:String, isVertex:Bool):String
 	{
 		var bytes = haxe.io.Bytes.ofString((isVertex ? "V" : "F") + "\x00" + source);
-		return StringTools.hex(fnv1a(bytes), 8) + StringTools.hex(djb2(bytes), 8);
+		var h1 = haxe.Int64.and(haxe.Int64.ofInt(-2128831035), MASK32); // FNV-1a 32
+		var h2 = haxe.Int64.ofInt(5381);                              // DJB2 32
+		var i = 0;
+		var n = bytes.length;
+		while (i < n)
+		{
+			var b = bytes.get(i);
+			h1 = haxe.Int64.and(haxe.Int64.mul(haxe.Int64.xor(h1, haxe.Int64.ofInt(b)),
+				haxe.Int64.ofInt(16777619)), MASK32);
+			h2 = haxe.Int64.and(haxe.Int64.add(haxe.Int64.shl(h2, 5), h2), MASK32);
+			h2 = haxe.Int64.xor(h2, haxe.Int64.ofInt(b));
+			i++;
+		}
+		return StringTools.hex(h1.low, 8) + StringTools.hex(h2.low, 8);
 	}
 
 	/**
@@ -315,12 +334,24 @@ class ShaderAot
 
 		if (isRuntimeFallbackEnabled())
 		{
+			// The same GLSL source can be requested again (re-created shader/program, state
+			// changes); translating it once per process is enough and avoids the
+			// newLibraryWithSource stall on the render thread.
+			if (runtimeCache != null && runtimeCache.exists(key))
+			{
+				runtimeCacheHits++;
+				info('[cne-aot]   runtime fallback served from memo for ' + key);
+				return runtimeCache.get(key);
+			}
 			runtimeTranslations++;
 			var result = GLSLToMSL.translateSafe(source, isVertex);
 			if (result.code != null && result.errors.length == 0)
 			{
 				info('[cne-aot]   runtime fallback (CNE_METAL_AOT_RUNTIME_TRANSLATE=1) produced MSL for ' + key);
-				return {code: result.code, metallib: null, result: result};
+				var entry:ShaderAotEntry = {code: result.code, metallib: null, result: result};
+				if (runtimeCache == null) runtimeCache = new Map<String, ShaderAotEntry>();
+				runtimeCache.set(key, entry);
+				return entry;
 			}
 			error('[cne-aot]   runtime fallback failed: ' + result.errors.join("; "));
 		}
@@ -345,6 +376,7 @@ class ShaderAot
 			+ ' metallibStages=' + metallibEntries
 			+ ' hits=' + hits + ' normalizedHits=' + normalizedHits + ' misses=' + misses
 			+ ' runtimeTranslations=' + runtimeTranslations
+			+ ' runtimeCacheHits=' + runtimeCacheHits
 			+ ' runtimeGlslToMslCalls=' + GLSLToMSL.runtimeCallCount;
 	}
 

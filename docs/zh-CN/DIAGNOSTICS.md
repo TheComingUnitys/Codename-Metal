@@ -122,6 +122,11 @@ classpath）。mod 的 shader 默认不进缓存，运行时首次使用时翻�
 - `CNE_AOT_INCLUDE_MISSES=1`：额外烘焙 `/tmp/cne-aot-missing` 的源码（`--include-misses`）；
 - `CNE_AOT_MISSES_DIR=<dir>`：换一个 dump 目录。
 
+运行时翻译结果会按 cache key 在**进程内缓存**：同一个 mod shader 重新创建时不会再翻译/编译。
+`[cne-aot] EXIT` 行会在 `runtimeTranslations` 旁边输出 `runtimeCacheHits`。某个源**首次**
+运行时翻译仍会在渲染线程同步调用 `newLibraryWithSource`，表现为进入 mod 状态时的一次性卡顿，
+可用 `CNE_METAL_HITCH=1` 观察。
+
 ## 3. 帧录制与直连 Metal 回放（A/B 原型）
 
 ```sh
