@@ -869,9 +869,15 @@ namespace metal {
 		return true;
 	}
 
+	extern "C" void cne_metal_release_caches ();
+
 	void MetalContext::Destroy ()
 	{
 		if (!created) return;
+
+		// Drop the binding layer's cached handlers before bgfx shuts down (they would be
+		// stale handles if the context is ever recreated).
+		cne_metal_release_caches ();
 
 		for (auto& entry : objects)
 		{

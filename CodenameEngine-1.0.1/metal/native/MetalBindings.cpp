@@ -4910,6 +4910,24 @@ namespace lime {
 	void lime_gl_delete_buffer (int buffer)
 	{
 		CNE_COV ("lime_gl_delete_buffer");
+		// [cne-lifecycle] The cached bgfx buffers are keyed by GL buffer id; deleting the GL
+		// buffer has to release them too, otherwise a long session that recreates vertex/index
+		// buffers leaks GPU handles until exit.
+		{
+			auto vb = vertexBufferSlots.find ((uint32_t)buffer);
+			if (vb != vertexBufferSlots.end ())
+			{
+				if (bgfx::isValid (vb->second.dynamic)) bgfx::destroy (vb->second.dynamic);
+				if (bgfx::isValid (vb->second.handle)) bgfx::destroy (vb->second.handle);
+				vertexBufferSlots.erase (vb);
+			}
+			auto ib = indexBufferSlots.find ((uint32_t)buffer);
+			if (ib != indexBufferSlots.end ())
+			{
+				if (bgfx::isValid (ib->second.dynamic)) bgfx::destroy (ib->second.dynamic);
+				indexBufferSlots.erase (ib);
+			}
+		}
 		buffers.erase (buffer);
 		MetalContext::Remove (buffer);
 	}
@@ -7536,6 +7554,10 @@ namespace lime {
 	void lime_gl_delete_texture (int texture)
 	{
 		CNE_COV ("lime_gl_delete_texture");
+		// [cne-lifecycle] Retire framebuffers that still reference this attachment before the
+		// texture id is gone (deleting only the texture left their bgfx framebuffer handles
+		// alive until the periodic sweep).
+		InvalidateFramebuffersForTexture (texture);
 		auto it = textures.find (texture);
 		if (it != textures.end () && bgfx::isValid (it->second.handle))
 		{
@@ -8331,6 +8353,35 @@ namespace lime {
 
 	#include "MetalBindingsRegister.inc"
 
+
+	// [cne-lifecycle] Called from MetalContext::Destroy() before bgfx::shutdown(): drop every
+	// cached handler.  bgfx releases the GPU objects itself; keeping the binding-layer maps
+	// alive across a context recreate would leave stale handles in them.
+	extern "C" void cne_metal_release_caches ()
+	{
+		// A draw may still be deferred for merging; it must not be submitted after shutdown.
+		gOpenDraw = OpenDraw ();
+		gOpenMergeKey = MergeKey ();
+		gCurrentMergeKey = MergeKey ();
+		gMergeThisDraw = false;
+
+		textures.clear ();
+		programs.clear ();
+		shaders.clear ();
+		buffers.clear ();
+		vertexArrays.clear ();
+		framebuffers.clear ();
+		renderbuffers.clear ();
+		attribSlots.clear ();
+		vertexBufferSlots.clear ();
+		indexBufferSlots.clear ();
+		constantPools.clear ();
+		gDepthPool.clear ();
+		framebufferViews.clear ();
+		gFramePasses.clear ();
+		MetalContext::boundTextures.clear ();
+		for (int i = 0; i < 32; ++i) gBoundTexIds[i] = 0;
+	}
 
 	namespace metal
 	{
