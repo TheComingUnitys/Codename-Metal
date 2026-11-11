@@ -18,6 +18,7 @@
 #include <bgfx/bgfx.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <chrono>
 #include <cstdint>
 #include <csignal>
@@ -525,18 +526,21 @@ namespace lime {
 		};
 
 		/** Payload attached to `Object` entries; keyed by GL object id. */
-		std::map<int, ShaderData> shaders;
-		std::map<int, ProgramData> programs;
-		std::map<int, BufferData> buffers;
-		std::map<int, TextureData> textures;
-		std::map<int, FramebufferData> framebuffers;
-		std::map<int, RenderbufferData> renderbuffers;
-		std::map<int, VertexArrayData> vertexArrays;
+		// [cne-fastpath] GL ids are dense-ish compile-time-unknown ints; the hot draw path
+		// only does lookups, and unordered_map keeps element references stable across
+		// rehashes (nb: iterators are not stable; no code holds one across an insert).
+		std::unordered_map<int, ShaderData> shaders;
+		std::unordered_map<int, ProgramData> programs;
+		std::unordered_map<int, BufferData> buffers;
+		std::unordered_map<int, TextureData> textures;
+		std::unordered_map<int, FramebufferData> framebuffers;
+		std::unordered_map<int, RenderbufferData> renderbuffers;
+		std::unordered_map<int, VertexArrayData> vertexArrays;
 
 		int nextDenseLocation = 1;
 
 		/** The Haxe GLSL→MSL translator reports attribute slots through this map. */
-		std::map<int, std::map<uint8_t, uint8_t>> attribSlots;
+		std::unordered_map<int, std::map<uint8_t, uint8_t>> attribSlots;
 
 		// ---------------------------------------------------------------- helpers
 
@@ -3117,7 +3121,7 @@ namespace lime {
 
 		if (MtlAuditEnabled ())
 		{
-			auto loaderOf = [] (std::map<int, ShaderData>& table, int shaderId) -> const char*
+			auto loaderOf = [] (std::unordered_map<int, ShaderData>& table, int shaderId) -> const char*
 			{
 				auto found = table.find (shaderId);
 				return (found == table.end ()) ? "-" : found->second.origin;
