@@ -829,17 +829,25 @@
 		const size_t rowBytes = (size_t)width * bpp;
 		const size_t needed = rowBytes * (size_t)height;
 
-		// Reuse the CPU mirror allocation: a streaming texture re-uploads the same size every
-		// frame, so re-assigning the vector (zero fill + allocation) was pure overhead here.
-		if (texture->pixels.size () != needed) texture->pixels.resize (needed, 0);
-
+		// [cne-mirror] The CPU mirror is only needed when the texture can later be promoted to
+		// a render target (it is used to re-create the handle) or is already an RT.  A
+		// glTexImage2D(..., null) allocation (OpenFL camera canvases, font atlases) starts with
+		// no content at all, so allocating/zeroing a full-size mirror there wasted tens of MB
+		// per camera for pixels that are rendered, not stored.
 		if (source != nullptr && needed > 0)
 		{
+			if (texture->pixels.size () != needed) texture->pixels.resize (needed, 0);
 			std::memcpy (texture->pixels.data (), source, needed);
 		}
-		else if (source == nullptr && needed > 0)
+		else if (source == nullptr && needed > 0 && (texture->isRenderTarget || texture->handleIsRt))
 		{
+			if (texture->pixels.size () != needed) texture->pixels.resize (needed, 0);
 			std::memset (texture->pixels.data (), 0, needed);
+		}
+		else
+		{
+			texture->pixels.clear ();
+			texture->pixels.shrink_to_fit ();
 		}
 
 		if (ProfileEnabled ()) gProfTexBytes += (double)needed;
@@ -903,6 +911,12 @@
 		}
 
 		texture->samplerFlags = ToBgfxSampler (*texture);
+
+		// [cne-mirror] Mirror lifetime bookkeeping (see the periodic sweep in
+		// ActiveViewForTarget): streaming textures keep their reusable buffer, one-shot large
+		// images release it after a couple of seconds.
+		texture->lastUploadFrame = metal::gFrameIndex;
+		++texture->uploadCount;
 
 		if (DebugEnabled ())
 		{

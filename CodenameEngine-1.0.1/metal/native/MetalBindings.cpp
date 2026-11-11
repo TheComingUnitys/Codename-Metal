@@ -412,6 +412,10 @@ namespace lime {
 			int wrapT = 0x812F;
 			// [cne-fastpath] ToBgfxSampler(texture) cached; updated by texParameteri/creation.
 			uint32_t samplerFlags = 0;
+			// [cne-mirror] used to decide whether the CPU mirror can be released (static images)
+			// without causing allocation churn on streaming textures (video uploads every frame).
+			uint32_t lastUploadFrame = 0;
+			uint32_t uploadCount = 0;
 		};
 
 		struct FramebufferData
@@ -5217,6 +5221,22 @@ namespace lime {
 				gFboIntermediate.clear ();
 
 				ResetViewAllocation ();
+
+				// [cne-mirror] Every two seconds, release the CPU mirror of one-shot large data
+				// textures (static images).  Streaming textures (uploadCount > 1, e.g. video)
+				// keep their buffer so they do not allocate/free every frame.
+				if (metal::gFrameIndex != 0u && (metal::gFrameIndex % 120u) == 0u)
+				{
+					for (auto& entry : textures)
+					{
+						TextureData& t = entry.second;
+						if (t.isRenderTarget || t.handleIsRt || t.uploadCount != 1) continue;
+						if (t.pixels.size () <= (4u << 20)) continue;
+						if (metal::gFrameIndex - t.lastUploadFrame < 120u) continue;
+						t.pixels.clear ();
+						t.pixels.shrink_to_fit ();
+					}
+				}
 
 				// Clear the whole backbuffer once per frame *before* any pass is submitted.
 				// The engine never calls glClear and bgfx only clears a view rect, which left
