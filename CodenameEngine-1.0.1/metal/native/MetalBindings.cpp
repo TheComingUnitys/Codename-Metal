@@ -1753,6 +1753,9 @@ namespace lime {
 			uint32_t flags = 0;
 		};
 		static std::vector<MergeRange> gOpenRanges;
+		// [cne-instance] true for the draw being prepared when it uses i_dataN attributes;
+		// such draws must never be merged/deferred because the instance buffer is per-draw.
+		static bool gDrawUsesInstanceAttribs = false;
 
 		struct MergedIndexEntry
 		{
@@ -2010,17 +2013,15 @@ namespace lime {
 		}
 
 
-		// [cne-instance] One reusable per-instance vertex buffer (float4 per i_dataN slot).
-		static bgfx::DynamicVertexBufferHandle gInstanceBuffer = bgfx::DynamicVertexBufferHandle ();
-		static int gInstanceBufferSlots = 0;
-		static uint32_t gInstanceBufferCap = 0;
-
 		/// Gathers every divisor>0 attribute of the current VAO into bgfx's instance-data
 		/// layout (i_data0.. slots, float4 each) and binds it.  Returns false when there is
 		/// nothing usable, in which case the draw runs without instance data.
 		static bool SetupInstanceData (VertexArrayData* vao, int numInstances)
 		{
-			if (vao == nullptr || numInstances <= 1) return false;
+			// Even a single instance must be uploaded: the shader reads i_dataN as vertex
+			// inputs, so a one-instance batch still needs the buffer (drawTriangles falls
+			// back to the non-instanced entry point for instanceCount == 1).
+			if (vao == nullptr || numInstances <= 0) return false;
 			auto iaIt = instanceAttribs.find (MetalContext::state.currentProgram);
 			if (iaIt == instanceAttribs.end () || iaIt->second.empty ()) return false;
 
@@ -2053,27 +2054,14 @@ namespace lime {
 			}
 			if (filled == 0) return false;
 
-			const uint32_t bytes = (uint32_t)(data.size () * sizeof (float));
-			if (!bgfx::isValid (gInstanceBuffer) || gInstanceBufferSlots != slots || gInstanceBufferCap < bytes)
-			{
-				if (bgfx::isValid (gInstanceBuffer)) bgfx::destroy (gInstanceBuffer);
-				bgfx::VertexLayout layout;
-				layout.begin ();
-				for (int i = 0; i < slots; ++i)
-					layout.add ((bgfx::Attrib::Enum)((int)bgfx::Attrib::TexCoord0 + i), 4,
-						bgfx::AttribType::Float);
-				layout.end ();
-				gInstanceBuffer = bgfx::createDynamicVertexBuffer (
-					bgfx::copy (data.data (), bytes), layout);
-				gInstanceBufferSlots = slots;
-				gInstanceBufferCap = bytes;
-				if (!bgfx::isValid (gInstanceBuffer)) return false;
-			}
-			else
-			{
-				bgfx::update (gInstanceBuffer, 0, bgfx::copy (data.data (), bytes));
-			}
-			bgfx::setInstanceDataBuffer (gInstanceBuffer, 0, (uint32_t)numInstances);
+			// A single reusable dynamic buffer aliases earlier draws in the same frame
+			// (bgfx submits at frame end, so an update would be the data every draw reads).
+			// Transient instance data is per-frame memory: each draw keeps its own copy.
+			bgfx::InstanceDataBuffer idb;
+			bgfx::allocInstanceDataBuffer (&idb, (uint32_t)slots, (uint32_t)numInstances);
+			if (idb.data == nullptr) return false;
+			std::memcpy (idb.data, data.data (), data.size () * sizeof (float));
+			bgfx::setInstanceDataBuffer (&idb, 0, (uint32_t)numInstances);
 			return true;
 		}
 
@@ -2087,6 +2075,8 @@ namespace lime {
 			// encoder state is still intact apart from the index buffer the caller just bound).
 			gMergeThisDraw = false;
 			{
+				auto iaProbe = instanceAttribs.find (MetalContext::state.currentProgram);
+				gDrawUsesInstanceAttribs = iaProbe != instanceAttribs.end () && !iaProbe->second.empty ();
 				MergeKey key;
 				key.valid = true;
 				key.indexed = gPendingIndexed;
@@ -2130,7 +2120,7 @@ namespace lime {
 					key.vpHash = vh;
 				}
 				gCurrentMergeKey = key;
-				if (gMergeDrawsEnabled && gPendingIndexed && gPendingInstances == 1 && MergeableWithOpen (key))
+				if (gMergeDrawsEnabled && !gDrawUsesInstanceAttribs && gPendingIndexed && gPendingInstances == 1 && MergeableWithOpen (key))
 				{
 					gOpenMergeKey.indexCount += key.indexCount;
 					gOpenDraw.count = gOpenMergeKey.indexCount;
@@ -7484,7 +7474,7 @@ namespace lime {
 			// [cne-merge] Keep indexed single-instance draws open so the next compatible draw can
 			// extend the same index range.  Everything else is submitted immediately (the open
 			// draw was already flushed in BindVertexStreams).
-			if (gMergeDrawsEnabled && indexed && numInstances == 1 && gCurrentMergeKey.valid && gCurrentMergeKey.indexed)
+			if (gMergeDrawsEnabled && !gDrawUsesInstanceAttribs && indexed && numInstances == 1 && gCurrentMergeKey.valid && gCurrentMergeKey.indexed)
 			{
 				gCurrentMergeKey.valid = true;
 				gOpenMergeKey = gCurrentMergeKey;
