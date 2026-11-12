@@ -8108,6 +8108,10 @@ namespace lime {
 			it->second.width = 0;
 			it->second.height = 0;
 			it->second.pendingTexture = -1;
+			// [cne-fastpath] the attachment changed: EnsureFramebufferFast must not return the
+			// cached handle for the previous colour texture (filter ping-pong re-attaches
+			// textures to the same GL framebuffer every frame).
+			++gFboCacheGeneration;
 		}
 
 		it->second.failedForTexture = -1;
