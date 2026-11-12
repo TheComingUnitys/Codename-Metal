@@ -11,7 +11,8 @@
 ## 未完成的优化（记录）
 
 - **D38**：已完成。连续/非连续索引范围通过合并索引缓存合并；**instanced bitmap 批处理**
-  已在 [openfl-metal](https://github.com/TheComingUnitys/openfl-metal) 与
+  已实现但默认关闭（实例批次未应用离屏 late matrix flip，滤镜关卡会旋转；用
+  `CNE_METAL_INSTANCING=1` 开启），实现位于 [openfl-metal](https://github.com/TheComingUnitys/openfl-metal) 与
   [flixel-metal](https://github.com/TheComingUnitys/flixel-metal) fork 中实现
   （`InstancedDisplayObjectShader` + `MetalInstanceBatch`，`FlxG.metalInstancing`）；
   后端把 `i_data0..15` 属性映射到 bgfx instance data buffer，并实现

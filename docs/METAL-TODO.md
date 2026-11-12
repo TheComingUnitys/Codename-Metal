@@ -16,7 +16,9 @@ engine corpus; mod shaders are translated at runtime) (verified by
 ## Unfinished optimizations (recorded)
 
 - **D38**: complete.  Contiguous and non-contiguous index ranges are merged through the
-  merged-index cache; **instanced bitmap batching** is implemented in the
+  merged-index cache; **instanced bitmap batching** is implemented (opt-in: it skips the
+  offscreen late matrix flip, so filtered stages rotate; enable with CNE_METAL_INSTANCING=1)
+  in the
   [openfl-metal](https://github.com/TheComingUnitys/openfl-metal) and
   [flixel-metal](https://github.com/TheComingUnitys/flixel-metal) forks
   (`InstancedDisplayObjectShader` + `MetalInstanceBatch`, `FlxG.metalInstancing`).  The

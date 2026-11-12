@@ -179,8 +179,9 @@ haxelib dev openfl ../../openfl-metal    # adjust the relative path
 haxelib dev flixel ../../flixel-metal
 ```
 
-The `metal_instancing` define is enabled for the Metal target in `project.xml`; disable the
-optimization at runtime with `FlxG.metalInstancing = false` or rebuild without the define.
+The `metal_instancing` define is enabled for the Metal target in `project.xml`, but the
+instanced bitmap batch itself is **opt-in** while its offscreen matrix-flip handling is being
+validated: enable it with `CNE_METAL_INSTANCING=1` or `FlxG.metalInstancing = true`.
 
 ---
 
