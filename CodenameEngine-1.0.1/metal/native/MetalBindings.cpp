@@ -630,11 +630,13 @@ namespace lime {
 			int refs = 0;
 		};
 		static std::map<uint64_t, DepthPoolEntry> gDepthPool;
-		// [cne-debug] CNE_METAL_SHARED_DEPTH=0: per-FBO depth textures (pre-C24 behaviour).
+		// bgfx rejects a depth texture that is attached to several framebuffers at once
+		// (filter chains create multiple same-size targets).  Sharing therefore made those
+		// FBOs invalid and the world render target black; keep the pool opt-in only.
 		static const bool gSharedDepthEnabled = [] ()
 		{
 			const char* v = std::getenv ("CNE_METAL_SHARED_DEPTH");
-			return v == nullptr || !(v[0] == '0' && v[1] == '\0');
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		} ();
 		static inline uint64_t DepthKey (int w, int h)
 		{
