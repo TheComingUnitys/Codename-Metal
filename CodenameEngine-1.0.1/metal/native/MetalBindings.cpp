@@ -5949,11 +5949,10 @@ namespace lime {
 					if (v == nullptr) return true;
 					return !(v[0] == '0' && v[1] == '\0');
 				} ();
-				// Only the letterbox bands can keep stale pixels; when the game viewport already
-				// covers the whole backbuffer the composite overwrites every pixel each frame.
-				const bool letterboxed = MetalContext::state.viewport[2] != MetalContext::state.backbufferWidth
-					|| MetalContext::state.viewport[3] != MetalContext::state.backbufferHeight;
-				if (fullBufferClear && (gLegacyDraw || letterboxed))
+				// Clear the whole backbuffer every frame.  Skipping it when the viewport covered
+				// the backbuffer left trails of the previous frame (title screen text ghosting,
+				// "Press Enter to Begin" repeated and fading over several frames).
+				if (fullBufferClear)
 				{
 					bgfx::setViewRect (199, 0, 0,
 						(uint16_t)MetalContext::state.backbufferWidth,
