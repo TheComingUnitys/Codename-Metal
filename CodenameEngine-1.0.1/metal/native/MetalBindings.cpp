@@ -583,10 +583,23 @@ namespace lime {
 			const char* v = std::getenv ("CNE_METAL_LEGACY");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		} ();
+		// Per-feature bisect switches (default on).  Set to 0 to disable exactly one cache.
+		auto envOn = [] (const char* name)
+		{
+			const char* v = std::getenv (name);
+			return v == nullptr || !(v[0] == '0' && v[1] == '\0');
+		};
+		static const bool gFastTex = envOn ("CNE_METAL_FAST_TEX");
+		static const bool gFastFbo = envOn ("CNE_METAL_FAST_FBO");
+		static const bool gFastView = envOn ("CNE_METAL_FAST_VIEW");
+		static const bool gFastUniform = envOn ("CNE_METAL_FAST_UNIFORM");
+		static const bool gFastState = envOn ("CNE_METAL_FAST_STATE");
+		static const bool gScreenReuse = envOn ("CNE_METAL_SCREEN_REUSE");
+		static const bool gMaxIndexCache = envOn ("CNE_METAL_MAXINDEX_CACHE");
 
 		inline void ApplyBgfxState (uint64_t state)
 		{
-			if (!gLegacyDraw && state == gAppliedState && metal::gFrameIndex == gAppliedStateFrame) return;
+			if (!gLegacyDraw && gFastState && state == gAppliedState && metal::gFrameIndex == gAppliedStateFrame) return;
 			bgfx::setState (state);
 			gAppliedState = state;
 			gAppliedStateFrame = metal::gFrameIndex;
@@ -665,7 +678,7 @@ namespace lime {
 		}
 		inline int FastBoundTextureId (int unit)
 		{
-			if (gLegacyDraw)
+			if (gLegacyDraw || !gFastTex)
 			{
 				auto it = MetalContext::boundTextures.find (unit);
 				return (it == MetalContext::boundTextures.end ()) ? 0 : it->second;
@@ -677,7 +690,7 @@ namespace lime {
 		inline bool IsTextureBound (int textureId)
 		{
 			if (textureId <= 0) return false;
-			if (gLegacyDraw)
+			if (gLegacyDraw || !gFastTex)
 			{
 				for (auto& b : MetalContext::boundTextures) if (b.second == textureId) return true;
 				return false;
@@ -3987,8 +4000,8 @@ namespace lime {
 			// the program's first submit of a frame and only the dirty uniforms afterwards is
 			// equivalent to uploading every draw - without the per-draw cost.
 			const uint32_t frame = metal::gFrameIndex;
-			const bool uploadAllUniforms = gLegacyDraw || program->uniformFrame != frame;
-			const bool uploadAllSamplers = gLegacyDraw || program->samplerKeysFrame != frame;
+			const bool uploadAllUniforms = gLegacyDraw || !gFastUniform || program->uniformFrame != frame;
+			const bool uploadAllSamplers = gLegacyDraw || !gFastUniform || program->samplerKeysFrame != frame;
 			program->uniformFrame = frame;
 			program->samplerKeysFrame = frame;
 			if (program->samplerKeys.size () != program->uniforms.size ())
@@ -5749,7 +5762,7 @@ namespace lime {
 		inline bgfx::FrameBufferHandle EnsureFramebufferFast (int framebufferId)
 		{
 			if (framebufferId == 0) return BGFX_INVALID_HANDLE;
-			if (gLegacyDraw)
+			if (gLegacyDraw || !gFastFbo)
 			{
 				EnsureFramebuffer (framebufferId);
 				auto lf = framebuffers.find (framebufferId);
@@ -5985,7 +5998,7 @@ namespace lime {
 						MetalContext::state.scissorEnabled ? 1 : 0,
 						MetalContext::state.scissor[0], MetalContext::state.scissor[1],
 						MetalContext::state.scissor[2], MetalContext::state.scissor[3], 0 };
-					bool sameKey = !gLegacyDraw && gLastScreenKeyValid && gLastScreenView != 0;
+					bool sameKey = !gLegacyDraw && gScreenReuse && gLastScreenKeyValid && gLastScreenView != 0;
 					if (sameKey)
 					{
 						for (int k = 0; k < 10; ++k) if (key[k] != gLastScreenKey[k]) { sameKey = false; break; }
@@ -6162,7 +6175,7 @@ namespace lime {
 		{
 			ViewRectCache& c = gViewRectCache[view];
 			if (c.target != target) { c.target = target; c.x = c.y = c.w = c.h = -1; c.sx = c.sy = c.sw = c.sh = -1; }
-			if (!gLegacyDraw && x == c.x && y == c.y && w == c.w && h == c.h) return;
+			if (!gLegacyDraw && gFastView && x == c.x && y == c.y && w == c.w && h == c.h) return;
 			c.x = x; c.y = y; c.w = w; c.h = h;
 			bgfx::setViewRect (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
 		}
@@ -6173,7 +6186,7 @@ namespace lime {
 			const uint64_t key = ((uint64_t)flags << 48) ^ ((uint64_t)color << 16)
 				^ (uint64_t)(uint32_t)(depth * 1000.0f) ^ ((uint64_t)stencil << 8)
 				^ (gClearStateGeneration << 56);
-			if (!gLegacyDraw && key == c.clearKey) return;
+			if (!gLegacyDraw && gFastView && key == c.clearKey) return;
 			c.clearKey = key;
 			bgfx::setViewClear (view, flags, color, depth, stencil);
 		}
@@ -6182,7 +6195,7 @@ namespace lime {
 		{
 			ViewRectCache& c = gViewRectCache[view];
 			if (c.target != target) { c.target = target; c.sx = c.sy = c.sw = c.sh = -1; }
-			if (!gLegacyDraw && on == c.scOn && x == c.sx && y == c.sy && w == c.sw && h == c.sh) return;
+			if (!gLegacyDraw && gFastView && on == c.scOn && x == c.sx && y == c.sy && w == c.sw && h == c.sh) return;
 			c.scOn = on; c.sx = x; c.sy = y; c.sw = w; c.sh = h;
 			bgfx::setViewScissor (view, (uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h);
 		}
@@ -7697,7 +7710,7 @@ namespace lime {
 	// O(indices) on the CPU.  Partial ranges still take the direct path.
 	uint32_t MaxIndexPlusOneCached (BufferData& buffer, uint32_t elementSize, uint32_t firstIndex, int count)
 	{
-		if (gLegacyDraw) return MaxIndexPlusOne (buffer.bytes, elementSize, firstIndex, count);
+		if (gLegacyDraw || !gMaxIndexCache) return MaxIndexPlusOne (buffer.bytes, elementSize, firstIndex, count);
 		if (firstIndex == 0 && count > 0
 		&&  (size_t)count * elementSize == buffer.bytes.size ())
 		{
