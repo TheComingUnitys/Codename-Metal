@@ -593,6 +593,15 @@ namespace lime {
 		static const bool gFastFbo = envOn ("CNE_METAL_FAST_FBO");
 		static const bool gFastView = envOn ("CNE_METAL_FAST_VIEW");
 		static const bool gFastUniform = envOn ("CNE_METAL_FAST_UNIFORM");
+		// Sampler binding is part of bgfx's draw state and is discarded by submit by default;
+		// caching it across draws left the title-screen atlas unbound/aliased (repeated
+		// "Press Enter to Begin" frames).  Bind every sampler every draw unless explicitly
+		// re-enabled for experiments.
+		static const bool gFastSampler = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL_FAST_SAMPLER");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		} ();
 		static const bool gFastState = envOn ("CNE_METAL_FAST_STATE");
 		static const bool gScreenReuse = envOn ("CNE_METAL_SCREEN_REUSE");
 		static const bool gMaxIndexCache = envOn ("CNE_METAL_MAXINDEX_CACHE");
@@ -4001,7 +4010,7 @@ namespace lime {
 			// equivalent to uploading every draw - without the per-draw cost.
 			const uint32_t frame = metal::gFrameIndex;
 			const bool uploadAllUniforms = gLegacyDraw || !gFastUniform || program->uniformFrame != frame;
-			const bool uploadAllSamplers = gLegacyDraw || !gFastUniform || program->samplerKeysFrame != frame;
+			const bool uploadAllSamplers = gLegacyDraw || !gFastSampler || program->samplerKeysFrame != frame;
 			program->uniformFrame = frame;
 			program->samplerKeysFrame = frame;
 			if (program->samplerKeys.size () != program->uniforms.size ())
