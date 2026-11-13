@@ -22,4 +22,10 @@ case "${1:-}" in
 	--filter) br metal4_filter.mm filter ;;
 	--scissor) br metal4_scissor.mm scissor ;;
 	--metallib) b metal4_metallib.mm metallib ;;
+	--metallib-pipeline)
+		clang++ -std=c++17 -fobjc-arc "$ROOT/metal/tools/CompileShaderAot.mm" -o "$OUT/CompileShaderAot" -framework Metal -framework Foundation
+		rm -rf "$OUT/aotout" && mkdir -p "$OUT/aotout"
+		"$OUT/CompileShaderAot" "$ROOT/metal/tools/metal4_test_manifest.json" "$OUT/aotout" | tail -3
+		clang++ "${COMMON[@]}" "$ROOT/metal/tools/metal4_metallib_pipeline.mm" "$ROOT/metal/tools/metal4_renderer.mm" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/mlibpipe" "${FRAMEWORKS[@]}"
+		"$OUT/mlibpipe" "$OUT/aotout/vs.metallib" "$OUT/aotout/fs.metallib" ;;
 esac

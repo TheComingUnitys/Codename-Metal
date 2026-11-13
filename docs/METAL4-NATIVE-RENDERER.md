@@ -1,12 +1,12 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~65%
+## Progress: ~70%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
 ~30%, ortho + two textures + blend ~35%, renderer core ~40%, drawable present via core
 ~45%, batched 2D draw with alpha ~50%, pipeline cache ~55%, render-to-texture + filter pass
-~60%, scissor/viewport ~65%, GL-shaped backend ~75%, shaders/AOT ~85%, parity + bgfx
-removal 100%.
+~60%, scissor/viewport ~65%, AOT metallib pipeline ~70%, GL-shaped backend ~80%,
+parity + bgfx removal 100%.
 
 ## Status
 
@@ -34,6 +34,9 @@ removal 100%.
 - Scissor and viewport are exposed on the renderer; the scissor probe clips a full-screen quad to
   the left half (`left=(255,0,0) right=(0,0,255)`).
 - AOT metallibs load through `MTL::Library` and expose the translated entry point `xlatMtlMain`.
+- `Renderer::getPipelineFromMetallib()` builds a real pipeline from the generated VS/FS
+  `.metallib` pair; the metallib-pipeline probe renders red (`center=(255,0,0)`), so the AOT
+  shader path is usable from MTL4 without recompiling MSL at runtime.
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 

@@ -98,6 +98,46 @@ namespace cne::metal4
 		return pso;
 	}
 
+	MTL::RenderPipelineState* Renderer::getPipelineFromMetallib (const char* vertexMetallib, const char* fragmentMetallib,
+		BlendMode blend, MTL::PixelFormat format)
+	{
+		std::string key = "lib:";
+		key += vertexMetallib;
+		key += '\x1f';
+		key += fragmentMetallib;
+		key += (char)('0' + (int)blend);
+		key += (char)('0' + (int)format);
+		auto it = _pipelines.find (key);
+		if (it != _pipelines.end ()) return it->second;
+
+		NS::Error* err = nullptr;
+		NS::URL* vsUrl = NS::URL::fileURLWithPath (NS::String::string (vertexMetallib, NS::UTF8StringEncoding));
+		NS::URL* fsUrl = NS::URL::fileURLWithPath (NS::String::string (fragmentMetallib, NS::UTF8StringEncoding));
+		MTL::Library* vsLib = _device->newLibrary (vsUrl, &err);
+		MTL::Library* fsLib = _device->newLibrary (fsUrl, &err);
+		if (vsLib == nullptr || fsLib == nullptr) return nullptr;
+		MTL::Function* vfn = vsLib->newFunction (NS::String::string ("xlatMtlMain", NS::UTF8StringEncoding));
+		MTL::Function* ffn = fsLib->newFunction (NS::String::string ("xlatMtlMain", NS::UTF8StringEncoding));
+		if (vfn == nullptr || ffn == nullptr) return nullptr;
+		MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc ()->init ();
+		pd->setVertexFunction (vfn);
+		pd->setFragmentFunction (ffn);
+		MTL::RenderPipelineColorAttachmentDescriptor* ca = pd->colorAttachments ()->object (0);
+		ca->setPixelFormat (format);
+		if (blend != BlendMode::None)
+		{
+			ca->setBlendingEnabled (true);
+			ca->setSourceRGBBlendFactor (blend == BlendMode::Alpha ? MTL::BlendFactorSourceAlpha : MTL::BlendFactorOne);
+			ca->setDestinationRGBBlendFactor (blend == BlendMode::Alpha ? MTL::BlendFactorOneMinusSourceAlpha : MTL::BlendFactorOne);
+			ca->setSourceAlphaBlendFactor (MTL::BlendFactorOne);
+			ca->setDestinationAlphaBlendFactor (MTL::BlendFactorOneMinusSourceAlpha);
+		}
+		MTL::RenderPipelineState* pso = _device->newRenderPipelineState (pd, &err);
+		pd->release (); vfn->release (); ffn->release (); vsLib->release (); fsLib->release ();
+		if (pso != nullptr) _pipelines[key] = pso;
+		return pso;
+	}
+
 	void Renderer::beginFrame (MTL::Texture* target, MTL::ClearColor clearColor)
 	{
 		_width = (uint32_t)target->width ();

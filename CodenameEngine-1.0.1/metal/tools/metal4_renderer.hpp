@@ -47,6 +47,11 @@ namespace cne::metal4
 			BlendMode blend, MTL::PixelFormat format = MTL::PixelFormatRGBA8Unorm);
 		size_t pipelineCount () const { return _pipelines.size (); }
 
+		// AOT path: the engine's generated metallibs expose the translated entry point
+		// `xlatMtlMain`; pass the vertex and fragment metallib paths.
+		MTL::RenderPipelineState* getPipelineFromMetallib (const char* vertexMetallib, const char* fragmentMetallib,
+			BlendMode blend, MTL::PixelFormat format = MTL::PixelFormatRGBA8Unorm);
+
 		void beginFrame (MTL::Texture* target, MTL::ClearColor clearColor);
 		void beginDrawableFrame (CA::MetalDrawable* drawable, MTL::ClearColor clearColor);
 		void setPipeline (MTL::RenderPipelineState* pipeline);
