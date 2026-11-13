@@ -19,6 +19,8 @@ namespace cne::metal4
 
 	void Renderer::shutdown ()
 	{
+		for (auto& it : _pipelines) if (it.second) it.second->release ();
+		_pipelines.clear ();
 		if (_event) _event->release ();
 		if (_commandBuffer) _commandBuffer->release ();
 		if (_allocator) _allocator->release ();
@@ -58,6 +60,42 @@ namespace cne::metal4
 		MTL::SamplerState* sampler = _device->newSamplerState (sd);
 		sd->release ();
 		return sampler;
+	}
+
+	MTL::RenderPipelineState* Renderer::getPipeline (const char* vertexSource, const char* fragmentSource,
+		BlendMode blend, MTL::PixelFormat format)
+	{
+		std::string key = vertexSource;
+		key += '\x1f';
+		key += fragmentSource;
+		key += (char)('0' + (int)blend);
+		key += (char)('0' + (int)format);
+		auto it = _pipelines.find (key);
+		if (it != _pipelines.end ()) return it->second;
+
+		NS::Error* err = nullptr;
+		MTL::Library* vsLib = _device->newLibrary (NS::String::string (vertexSource, NS::UTF8StringEncoding), nullptr, &err);
+		MTL::Library* fsLib = _device->newLibrary (NS::String::string (fragmentSource, NS::UTF8StringEncoding), nullptr, &err);
+		if (vsLib == nullptr || fsLib == nullptr) return nullptr;
+		MTL::Function* vfn = vsLib->newFunction (NS::String::string ("vmain", NS::UTF8StringEncoding));
+		MTL::Function* ffn = fsLib->newFunction (NS::String::string ("fmain", NS::UTF8StringEncoding));
+		MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc ()->init ();
+		pd->setVertexFunction (vfn);
+		pd->setFragmentFunction (ffn);
+		MTL::RenderPipelineColorAttachmentDescriptor* ca = pd->colorAttachments ()->object (0);
+		ca->setPixelFormat (format);
+		if (blend != BlendMode::None)
+		{
+			ca->setBlendingEnabled (true);
+			ca->setSourceRGBBlendFactor (blend == BlendMode::Alpha ? MTL::BlendFactorSourceAlpha : MTL::BlendFactorOne);
+			ca->setDestinationRGBBlendFactor (blend == BlendMode::Alpha ? MTL::BlendFactorOneMinusSourceAlpha : MTL::BlendFactorOne);
+			ca->setSourceAlphaBlendFactor (MTL::BlendFactorOne);
+			ca->setDestinationAlphaBlendFactor (MTL::BlendFactorOneMinusSourceAlpha);
+		}
+		MTL::RenderPipelineState* pso = _device->newRenderPipelineState (pd, &err);
+		pd->release (); vfn->release (); ffn->release (); vsLib->release (); fsLib->release ();
+		if (pso != nullptr) _pipelines[key] = pso;
+		return pso;
 	}
 
 	void Renderer::beginFrame (MTL::Texture* target, MTL::ClearColor clearColor)

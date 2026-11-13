@@ -5,6 +5,8 @@
 
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
+#include <string>
+#include <unordered_map>
 
 namespace cne::metal4
 {
@@ -15,6 +17,13 @@ namespace cne::metal4
 		MTL::PixelFormat    format = MTL::PixelFormatRGBA8Unorm;
 		bool                renderTarget = false;
 		bool                shaderRead = true;
+	};
+
+	enum class BlendMode
+	{
+		None,
+		Alpha,
+		Additive,
 	};
 
 	class Renderer
@@ -31,6 +40,12 @@ namespace cne::metal4
 		MTL::Texture* createTexture (const TextureDesc& desc, const void* pixels = nullptr);
 		MTL::Buffer* createBuffer (const void* data, size_t size);
 		MTL::SamplerState* createSampler (MTL::SamplerMinMagFilter filter, MTL::SamplerAddressMode address);
+
+		// Pipeline cache keyed by shader source + blend mode + colour format.  The engine
+		// backend will feed its translated MSL (or metallib functions) through this.
+		MTL::RenderPipelineState* getPipeline (const char* vertexSource, const char* fragmentSource,
+			BlendMode blend, MTL::PixelFormat format = MTL::PixelFormatRGBA8Unorm);
+		size_t pipelineCount () const { return _pipelines.size (); }
 
 		void beginFrame (MTL::Texture* target, MTL::ClearColor clearColor);
 		void beginDrawableFrame (CA::MetalDrawable* drawable, MTL::ClearColor clearColor);
@@ -57,5 +72,6 @@ namespace cne::metal4
 		uint64_t                _frameValue = 0;
 		uint32_t                _width = 0;
 		uint32_t                _height = 0;
+		std::unordered_map<std::string, MTL::RenderPipelineState*> _pipelines;
 	};
 }
