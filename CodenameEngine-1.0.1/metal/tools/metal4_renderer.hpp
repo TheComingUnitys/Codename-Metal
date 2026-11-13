@@ -33,6 +33,7 @@ namespace cne::metal4
 		MTL::SamplerState* createSampler (MTL::SamplerMinMagFilter filter, MTL::SamplerAddressMode address);
 
 		void beginFrame (MTL::Texture* target, MTL::ClearColor clearColor);
+		void beginDrawableFrame (CA::MetalDrawable* drawable, MTL::ClearColor clearColor);
 		void setPipeline (MTL::RenderPipelineState* pipeline);
 		void setArgumentTable (MTL4::ArgumentTable* table);
 		void draw (MTL::PrimitiveType type, uint32_t vertexStart, uint32_t vertexCount, uint32_t instanceCount = 1);
@@ -40,6 +41,7 @@ namespace cne::metal4
 			MTL::GPUAddress indexBuffer, uint32_t indexBufferLength, uint32_t instanceCount = 1,
 			int32_t baseVertex = 0, uint32_t baseInstance = 0);
 		void endFrame ();
+		void endFrameAndPresent (CA::MetalDrawable* drawable);
 
 		// CPU-side helper: wait for the submitted frame, then read the target back.
 		bool readTarget (MTL::Texture* target, void* out, size_t bytesPerRow);

@@ -8,6 +8,7 @@ mkdir -p "$OUT"
 COMMON=(-std=c++17 -fno-objc-arc -I "$CPP" -I "$ROOT/metal/tools")
 FRAMEWORKS=(-framework Metal -framework Foundation -framework QuartzCore -framework AppKit)
 build() { clang++ "${COMMON[@]}" "$ROOT/metal/tools/$1" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/$2" "${FRAMEWORKS[@]}"; }
+buildrenderer() { clang++ "${COMMON[@]}" "$ROOT/metal/tools/$1" "$ROOT/metal/tools/metal4_renderer.mm" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/$2" "${FRAMEWORKS[@]}"; }
 
 build metal4_probe.mm probe
 "$OUT/probe"
@@ -16,5 +17,6 @@ case "${1:-}" in
 	--quad)     build metal4_quad.mm quad;       "$OUT/quad" ;;
 	--sprite)   build metal4_sprite.mm sprite;   "$OUT/sprite" ;;
 	--scene)    build metal4_scene.mm scene;     "$OUT/scene" ;;
-	--renderer) clang++ "${COMMON[@]}" "$ROOT/metal/tools/metal4_renderer_test.mm" "$ROOT/metal/tools/metal4_renderer.mm" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/renderer_test" "${FRAMEWORKS[@]}"; "$OUT/renderer_test" ;;
+	--renderer) buildrenderer metal4_renderer_test.mm renderer_test; "$OUT/renderer_test" ;;
+	--window)   buildrenderer metal4_window.mm window; "$OUT/window" ;;
 esac

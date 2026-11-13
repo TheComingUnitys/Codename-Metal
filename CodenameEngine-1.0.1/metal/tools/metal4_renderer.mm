@@ -76,6 +76,11 @@ namespace cne::metal4
 		_encoder = _commandBuffer->renderCommandEncoder (_pass);
 	}
 
+	void Renderer::beginDrawableFrame (CA::MetalDrawable* drawable, MTL::ClearColor clearColor)
+	{
+		beginFrame (drawable->texture (), clearColor);
+	}
+
 	void Renderer::setPipeline (MTL::RenderPipelineState* pipeline)
 	{
 		_encoder->setRenderPipelineState (pipeline);
@@ -97,6 +102,19 @@ namespace cne::metal4
 	{
 		_encoder->drawIndexedPrimitives (type, indexCount, indexType, indexBuffer,
 			indexBufferLength, instanceCount, baseVertex, baseInstance);
+	}
+
+	void Renderer::endFrameAndPresent (CA::MetalDrawable* drawable)
+	{
+		_encoder->endEncoding ();
+		_commandBuffer->endCommandBuffer ();
+		const MTL4::CommandBuffer* cbs[] = { _commandBuffer };
+		_queue->wait (drawable);
+		_queue->commit (cbs, 1);
+		_queue->signalDrawable (drawable);
+		drawable->present ();
+		if (_pass) { _pass->release (); _pass = nullptr; }
+		_encoder = nullptr;
 	}
 
 	void Renderer::endFrame ()

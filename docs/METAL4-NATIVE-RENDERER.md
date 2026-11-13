@@ -1,10 +1,11 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~40%
+## Progress: ~45%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
-~30%, ortho + two textures + blend ~35%, renderer core ~40%, full 2D pipeline ~50%,
-targets/filters ~70%, shaders/AOT ~85%, parity + bgfx removal 100%.
+~30%, ortho + two textures + blend ~35%, renderer core ~40%, drawable present via core
+~45%, full 2D pipeline ~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx
+removal 100%.
 
 ## Status
 
@@ -20,6 +21,8 @@ targets/filters ~70%, shaders/AOT ~85%, parity + bgfx removal 100%.
   frame pass, textures/buffers/samplers, pipeline + argument table binding, indexed/non-indexed
   draws, event-synchronised frame end and readback.  The renderer test reproduces the scene
   output (`bg=(0,0,51) red=(255,0,0) blue=(0,0,255)`).
+- `metal4_window` drives the same renderer against a real `CAMetalLayer` drawable and presents
+  120 frames (`presented=120`).
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 
