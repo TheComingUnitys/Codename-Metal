@@ -1,10 +1,10 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~35%
+## Progress: ~40%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
-~30%, ortho + two textures + blend ~35%, full 2D pipeline ~50%, targets/filters ~70%,
-shaders/AOT ~85%, parity + bgfx removal 100%.
+~30%, ortho + two textures + blend ~35%, renderer core ~40%, full 2D pipeline ~50%,
+targets/filters ~70%, shaders/AOT ~85%, parity + bgfx removal 100%.
 
 ## Status
 
@@ -16,6 +16,10 @@ shaders/AOT ~85%, parity + bgfx removal 100%.
   verifies readback (left/right red, blue background).
 - The scene probe adds an orthographic projection uniform, two textures bound through separate
   argument tables and alpha-blend pipeline state; readback confirms positions and colours.
+- `metal/tools/metal4_renderer.{hpp,mm}` is the first reusable core: device/queue/allocator,
+  frame pass, textures/buffers/samplers, pipeline + argument table binding, indexed/non-indexed
+  draws, event-synchronised frame end and readback.  The renderer test reproduces the scene
+  output (`bg=(0,0,51) red=(255,0,0) blue=(0,0,255)`).
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 
