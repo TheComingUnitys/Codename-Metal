@@ -1,0 +1,4 @@
+[
+  {"k":"vs","stage":"vertex","msl":"#include <metal_stdlib>\nusing namespace metal;\nstruct VIn { float2 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; };\nstruct VOut { float4 pos [[position]]; float2 uv; };\nvertex VOut xlatMtlMain(VIn in [[stage_in]], constant float4x4& m [[buffer(0)]]) { VOut o; o.pos = m * float4(in.pos, 0.0, 1.0); o.uv = in.uv; return o; }\n"},
+  {"k":"fs","stage":"fragment","msl":"#include <metal_stdlib>\nusing namespace metal;\nstruct VOut { float4 pos [[position]]; float2 uv; };\nfragment float4 xlatMtlMain(VOut in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { return t.sample(s, in.uv); }\n"}
+]

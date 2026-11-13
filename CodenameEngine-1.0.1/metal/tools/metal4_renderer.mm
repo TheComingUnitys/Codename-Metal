@@ -99,7 +99,7 @@ namespace cne::metal4
 	}
 
 	MTL::RenderPipelineState* Renderer::getPipelineFromMetallib (const char* vertexMetallib, const char* fragmentMetallib,
-		BlendMode blend, MTL::PixelFormat format)
+		BlendMode blend, const VertexLayout* layout, MTL::PixelFormat format)
 	{
 		std::string key = "lib:";
 		key += vertexMetallib;
@@ -107,6 +107,7 @@ namespace cne::metal4
 		key += fragmentMetallib;
 		key += (char)('0' + (int)blend);
 		key += (char)('0' + (int)format);
+		if (layout != nullptr) for (auto& a : layout->attribs) { key += (char)a.location; key += (char)a.buffer; key += (char)a.size; key += (char)a.stride; key += (char)a.offset; }
 		auto it = _pipelines.find (key);
 		if (it != _pipelines.end ()) return it->second;
 
@@ -122,6 +123,25 @@ namespace cne::metal4
 		MTL::RenderPipelineDescriptor* pd = MTL::RenderPipelineDescriptor::alloc ()->init ();
 		pd->setVertexFunction (vfn);
 		pd->setFragmentFunction (ffn);
+		if (layout != nullptr)
+		{
+			MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc ()->init ();
+			for (auto& a : layout->attribs)
+			{
+				MTL::VertexAttributeDescriptor* ad = vd->attributes ()->object ((NS::UInteger)a.location);
+				if (a.size == 1) ad->setFormat (a.type == 0 ? MTL::VertexFormatUCharNormalized : MTL::VertexFormatFloat);
+				else if (a.size == 2) ad->setFormat (a.type == 0 ? MTL::VertexFormatUChar2Normalized : MTL::VertexFormatFloat2);
+				else if (a.size == 3) ad->setFormat (a.type == 0 ? MTL::VertexFormatUChar3Normalized : MTL::VertexFormatFloat3);
+				else ad->setFormat (a.type == 0 ? MTL::VertexFormatUChar4Normalized : MTL::VertexFormatFloat4);
+				ad->setBufferIndex ((NS::UInteger)(a.buffer + 1));
+				ad->setOffset ((NS::UInteger)a.offset);
+				MTL::VertexBufferLayoutDescriptor* bl = vd->layouts ()->object ((NS::UInteger)(a.buffer + 1));
+				bl->setStride ((NS::UInteger)a.stride);
+				bl->setStepFunction (MTL::VertexStepFunctionPerVertex);
+			}
+			pd->setVertexDescriptor (vd);
+			vd->release ();
+		}
 		MTL::RenderPipelineColorAttachmentDescriptor* ca = pd->colorAttachments ()->object (0);
 		ca->setPixelFormat (format);
 		if (blend != BlendMode::None)

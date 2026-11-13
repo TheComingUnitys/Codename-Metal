@@ -22,6 +22,13 @@ case "${1:-}" in
 	--filter) br metal4_filter.mm filter ;;
 	--scissor) br metal4_scissor.mm scissor ;;
 	--metallib) b metal4_metallib.mm metallib ;;
+	--vertexlayout)
+		clang++ -std=c++17 -fobjc-arc "$ROOT/metal/tools/CompileShaderAot.mm" -o "$OUT/CompileShaderAot" -framework Metal -framework Foundation
+		"$OUT/CompileShaderAot" "$ROOT/metal/tools/metal4_test_manifest.json" "$OUT/aotv" >/dev/null
+		clang++ "${COMMON[@]}" "$ROOT/metal/tools/metal4_vertexlayout.mm" "$ROOT/metal/tools/metal4_renderer.mm" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/vlayout" "${FRAMEWORKS[@]}"
+		clang++ -std=c++17 -fobjc-arc "$ROOT/metal/tools/CompileShaderAot.mm" -o "$OUT/CompileShaderAot" -framework Metal -framework Foundation
+		"$OUT/CompileShaderAot" "$ROOT/metal/tools/metal4_manifest_vertex.json" "$OUT/aotv" | tail -2
+		"$OUT/vlayout" "$OUT/aotv/vs.metallib" "$OUT/aotv/fs.metallib" ;;
 	--metallib-pipeline)
 		clang++ -std=c++17 -fobjc-arc "$ROOT/metal/tools/CompileShaderAot.mm" -o "$OUT/CompileShaderAot" -framework Metal -framework Foundation
 		rm -rf "$OUT/aotout" && mkdir -p "$OUT/aotout"

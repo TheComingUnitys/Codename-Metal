@@ -1,6 +1,6 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~90%
+## Progress: ~93%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
 ~30%, ortho + two textures + blend ~35%, renderer core ~40%, drawable present via core
@@ -39,6 +39,9 @@ parity + bgfx removal 100%.
   bgfx-encoded, so this only verifies the app/window presentation hand-off.  The hook now also
   draws a full-screen MTL4 quad with an MSL pipeline, proving app-side MTL4 draw submission.
   The quad now samples a 2x2 texture through an MTL4 argument table (texture + sampler).
+- Vertex attributes and uniforms are validated: a pipeline built from AOT metallibs with a
+  `VertexLayout` (stage_in attributes + uniform `float4x4` at buffer 0) renders correctly
+  (`left=(0,0,255) right=(255,0,0)`).
 - The engine's native texture-upload path (`cne_metal_tex_image_2d`) forwards level-0 RGBA
   uploads to the MTL4 hook, which keeps the latest engine texture and samples it in the app
   window.  This proves real engine texture data reaches MTL4 resources.

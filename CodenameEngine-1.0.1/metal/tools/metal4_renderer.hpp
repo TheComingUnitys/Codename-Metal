@@ -7,6 +7,7 @@
 #include <QuartzCore/QuartzCore.hpp>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace cne::metal4
 {
@@ -17,6 +18,22 @@ namespace cne::metal4
 		MTL::PixelFormat    format = MTL::PixelFormatRGBA8Unorm;
 		bool                renderTarget = false;
 		bool                shaderRead = true;
+	};
+
+	struct VertexAttrib
+	{
+		int location = 0;
+		int buffer = 0;      // stream index; backend binds it at argument-table index buffer+1
+		int size = 2;        // components
+		int type = 1;        // 0 = unsigned byte, 1 = float
+		int normalized = 0;
+		int stride = 8;
+		int offset = 0;
+	};
+
+	struct VertexLayout
+	{
+		std::vector<VertexAttrib> attribs;
 	};
 
 	enum class BlendMode
@@ -50,7 +67,8 @@ namespace cne::metal4
 		// AOT path: the engine's generated metallibs expose the translated entry point
 		// `xlatMtlMain`; pass the vertex and fragment metallib paths.
 		MTL::RenderPipelineState* getPipelineFromMetallib (const char* vertexMetallib, const char* fragmentMetallib,
-			BlendMode blend, MTL::PixelFormat format = MTL::PixelFormatRGBA8Unorm);
+			BlendMode blend, const VertexLayout* layout = nullptr,
+			MTL::PixelFormat format = MTL::PixelFormatRGBA8Unorm);
 
 		void beginFrame (MTL::Texture* target, MTL::ClearColor clearColor);
 		void beginDrawableFrame (CA::MetalDrawable* drawable, MTL::ClearColor clearColor);
