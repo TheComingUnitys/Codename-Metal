@@ -1,9 +1,10 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~25%
+## Progress: ~30%
 
-Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, full 2D pipeline
-~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx removal 100%.
+Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
+~30%, full 2D pipeline ~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx
+removal 100%.
 
 ## Status
 
@@ -11,6 +12,8 @@ Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, full 2D 
 - `metal-cpp` is vendored at Apple's `27c4382b7151d55a51692cdcb27aaa98752240de`.
 - A standalone Metal 4 probe builds and runs on this machine.  The present probe also creates a
   `CAMetalLayer`, clears to a colour and presents 30 frames through an `MTL4CommandQueue`.
+- The sprite probe renders two textured quads with two draw calls into an offscreen target and
+  verifies readback (left/right red, blue background).
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 
