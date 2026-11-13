@@ -1,0 +1,56 @@
+# Native Metal 4 renderer (bgfx removal)
+
+## Status
+
+- Branch: `metal4` (main stays on the bgfx renderer).
+- `metal-cpp` is vendored at Apple's `27c4382b7151d55a51692cdcb27aaa98752240de`.
+- A standalone Metal 4 probe builds and runs on this machine:
+
+```text
+METAL4 PROBE: device=Apple M3 metal4=YES
+METAL4 PROBE: MTL4 command queue/allocator/command buffer OK
+```
+
+Build/run:
+
+```sh
+CodenameEngine-1.0.1/metal/scripts/build-metal4-probe.sh
+```
+
+## Why bgfx cannot be deleted yet
+
+The current renderer is a bgfx-facing implementation of the Lime/OpenGL-shaped API.  Removing
+bgfx means implementing that API directly on Metal 4: command queue/allocators, render passes,
+pipeline states, argument tables, buffers/textures/samplers, uniforms, render targets, view
+ordering and presentation.  Deleting the dependency before that path exists leaves the app
+with no renderer.
+
+## Metal 4 requirements
+
+- **macOS 26+** at runtime (`MTLGPUFamilyMetal4`).  The current release still supports macOS 11.
+- The existing deployment target remains 11.0 while the bgfx path is the shipping renderer;
+  a Metal 4-only build would have to raise it to 26.0.
+
+## Migration phases
+
+1. **Probe / design (done)** — metal-cpp vendored, MTL4 device/queue/allocator/command
+   buffer verified.
+2. **Present + clear** — `CAMetalLayer` drawable, MTL4 command queue, clear pass, present.
+3. **2D pipeline** — textures/samplers, vertex/index buffers, pipeline states, uniforms,
+   draw submission for the GL-shaped entry points.
+4. **Targets/filters** — render targets, attachment caches, filter passes, UV flip rules.
+5. **Shaders** — load the existing MSL/`metallib` output through `MTL4Compiler`/libraries
+   (and keep the runtime mod-shader translation path).
+6. **Parity + switch** — validate every mode, then remove the bgfx renderer and the
+   `bgfx-master` build dependency.
+
+## Reference material
+
+- Apple Game Porting Toolkit skills (Metal 4 API, resources, synchronization, pipeline
+  creation, drawable presentation) — used as the API reference for this migration.
+- `metal-cpp` headers: `metal/third_party/metal-cpp/Metal/MTL4*.hpp`.
+
+## Ground rules
+
+- Do not delete the bgfx build until the Metal 4 path renders the game and passes regression.
+- Keep the Metal 4 path behind a feature flag/branch so releases remain buildable.
