@@ -1,20 +1,26 @@
 # Native Metal 4 renderer (bgfx removal)
 
+## Progress: ~15%
+
+Milestones: probe ~5%, present+clear ~15%, 2D pipeline ~50%, targets/filters ~70%,
+shaders/AOT ~85%, parity + bgfx removal 100%.
+
 ## Status
 
 - Branch: `metal4` (main stays on the bgfx renderer).
 - `metal-cpp` is vendored at Apple's `27c4382b7151d55a51692cdcb27aaa98752240de`.
-- A standalone Metal 4 probe builds and runs on this machine:
+- A standalone Metal 4 probe builds and runs on this machine.  The present probe also creates a
+  `CAMetalLayer`, clears to a colour and presents 30 frames through an `MTL4CommandQueue`:
 
 ```text
 METAL4 PROBE: device=Apple M3 metal4=YES
 METAL4 PROBE: MTL4 command queue/allocator/command buffer OK
 ```
 
-Build/run:
+Build/run (add `--present` for the CAMetalLayer clear/present test):
 
 ```sh
-CodenameEngine-1.0.1/metal/scripts/build-metal4-probe.sh
+CodenameEngine-1.0.1/metal/scripts/build-metal4-probe.sh --present
 ```
 
 ## Why bgfx cannot be deleted yet
