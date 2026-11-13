@@ -17,6 +17,11 @@ extern "C" int cne_metal4_clear_frame (void* layer);
 extern "C" void cne_metal4_clear_shutdown (void);
 extern "C" void cne_metal4_force_upload_texture (int width, int height, const void* rgba);
 extern "C" void cne_metal4_force_upload_bgra (int width, int height, const void* data, int pitch);
+extern "C" int cne_metal4_app_init (void* layer, int width, int height);
+extern "C" void cne_metal4_app_frame_begin (void);
+extern "C" void cne_metal4_app_frame_end (void);
+extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
+extern "C" void cne_metal4_app_shutdown (void);
 extern "C" void cne_mtl_note_bgfx_init_boundary (void);
 extern "C" int cne_mtl_bgfx_internal_source_compiles (void);
 extern "C" void lime_install_menu_tracking_pump (void);
@@ -197,6 +202,7 @@ namespace metal {
 	// CNE_METAL4_CLEAR=1: present the frame from a native MTL4 queue instead of bgfx.
 	// Rendering is still bgfx-encoded for now; this is the presentation hand-off step.
 	static bool gMetal4ClearMode = false;
+	static bool gMetal4Native = false;
 	void* MetalContext::nativeDevice = nullptr;
 	void* MetalContext::commandQueue = nullptr;
 	bgfx::TextureHandle MetalContext::backbufferTexture = BGFX_INVALID_HANDLE;
@@ -815,6 +821,16 @@ namespace metal {
 		}
 		cne_mtl_note_bgfx_init_boundary ();
 
+		if (const char* m4n = std::getenv ("CNE_METAL4_NATIVE"))
+		{
+			if (m4n[0] == '1' && m4n[1] == '\0')
+			{
+				gMetal4Native = cne_metal4_app_init (layer, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight) != 0;
+				std::fprintf (stdout, "[cne-metal4] native renderer %s\n", gMetal4Native ? "enabled" : "unavailable");
+				std::fflush (stdout);
+			}
+		}
+
 		if (const char* m4 = std::getenv ("CNE_METAL4_CLEAR"))
 		{
 			if (m4[0] == '1' && m4[1] == '\0')
@@ -927,6 +943,11 @@ namespace metal {
 		objects.clear ();
 		attributeMaps.clear ();
 
+		if (gMetal4Native)
+		{
+			cne_metal4_app_shutdown ();
+			gMetal4Native = false;
+		}
 		if (gMetal4ClearMode)
 		{
 			cne_metal4_clear_shutdown ();
@@ -949,6 +970,14 @@ namespace metal {
 		{
 			std::fprintf (stderr, "[cne-trace] frame%u enter\n", gFrameIndex);
 			std::fflush (stderr);
+		}
+
+		if (gMetal4Native)
+		{
+			cne_metal4_app_frame_begin ();
+			cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
+				MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
+				MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
 		}
 
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the
@@ -1274,7 +1303,9 @@ namespace metal {
 		metal::ApplyFrameViewOrder ();
 		const double submitMs = SinceProcessStartMs () - submitStartMs;
 
-		const bool captureScreen = gMetal4ClearMode || gScreenCaptureRequested;
+		static uint32_t sMetal4CaptureTick = 0;
+		const bool metal4CaptureThisFrame = gMetal4ClearMode && ((sMetal4CaptureTick++ % 3u) == 0u);
+		const bool captureScreen = metal4CaptureThisFrame || gScreenCaptureRequested;
 		if (captureScreen) bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels-cache");
 
 		if (traceFrame)
@@ -1282,6 +1313,12 @@ namespace metal {
 			std::fprintf (stderr, "[cne-trace] frame%u before bgfx::frame\n", frameIndex);
 			std::fflush (stderr);
 		}
+		if (gMetal4Native)
+		{
+			cne_metal4_app_frame_end ();
+		}
+		else
+		{
 		bgfx::frame ();
 
 		if (gMetal4ClearMode)
@@ -1289,7 +1326,7 @@ namespace metal {
 			static std::vector<uint8_t> captureRaw;
 			static std::vector<uint8_t> captureRgba;
 			int cw = 0, ch = 0, cpitch = 0, cfmt = 0;
-			if (MetalContext::CaptureScreenPixels (captureRaw, cw, ch, cpitch, cfmt) && cw > 0 && ch > 0)
+			if (metal4CaptureThisFrame && MetalContext::CaptureScreenPixels (captureRaw, cw, ch, cpitch, cfmt) && cw > 0 && ch > 0)
 			{
 				if (cfmt == (int)bgfx::TextureFormat::BGRA8)
 				{
@@ -1313,6 +1350,7 @@ namespace metal {
 				}
 			}
 			cne_metal4_clear_frame (layer);
+		}
 		}
 		if (traceFrame)
 		{

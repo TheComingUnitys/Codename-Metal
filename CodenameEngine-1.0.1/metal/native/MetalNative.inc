@@ -18,6 +18,147 @@
 
 	extern "C" int cne_metal4_active (void);
 	extern "C" void cne_metal4_upload_texture (int width, int height, const void* data);
+	extern "C" int cne_metal4_app_active (void);
+	extern "C" void cne_metal4_app_frame_begin (void);
+	extern "C" void cne_metal4_app_frame_end (void);
+	extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
+	extern "C" void cne_metal4_app_viewport (int x, int y, int w, int h);
+	extern "C" void cne_metal4_app_scissor (int enabled, int x, int y, int w, int h);
+	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels);
+	extern "C" void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
+	extern "C" int cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib, const void* fsData, int fsSize, int fsIsMetallib, const int* attribLocations, int attribCount);
+	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const void* uniformBytes, int uniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
+
+	/** GL -> Metal blend factor (the enum values differ). */
+	static int Metal4BlendFactor (int gl)
+	{
+		switch (gl)
+		{
+			case 0: return 0;            // ZERO
+			case 1: return 1;            // ONE
+			case 0x0300: return 2;       // SRC_COLOR
+			case 0x0301: return 3;       // ONE_MINUS_SRC_COLOR
+			case 0x0302: return 4;       // SRC_ALPHA
+			case 0x0303: return 5;       // ONE_MINUS_SRC_ALPHA
+			case 0x0304: return 6;       // DST_ALPHA
+			case 0x0305: return 7;       // ONE_MINUS_DST_ALPHA
+			case 0x0306: return 8;       // DST_COLOR
+			case 0x0307: return 9;       // ONE_MINUS_DST_COLOR
+			case 0x0308: return 10;      // SRC_ALPHA_SATURATE
+			default: return 1;
+		}
+	}
+
+	/** Native ABI -> Metal 4 app renderer draw.  Returns false when unsupported. */
+	static bool Metal4Draw (int primitive, int count, int indexType, int byteOffset, int instanceCount, bool indexed, int vertexCount)
+	{
+		if (!cne_metal4_app_active ()) return false;
+
+		auto pit = programs.find (MetalContext::state.currentProgram);
+		if (pit == programs.end ()) return false;
+		ProgramData& program = pit->second;
+
+		static std::set<int> sDefinedPrograms;
+		if (sDefinedPrograms.find (MetalContext::state.currentProgram) == sDefinedPrograms.end ())
+		{
+			auto vsIt = shaders.find (program.vertexShader);
+			auto fsIt = shaders.find (program.fragmentShader);
+			if (vsIt == shaders.end () || fsIt == shaders.end ()) return false;
+			const ShaderData& vs = vsIt->second;
+			const ShaderData& fs = fsIt->second;
+			const void* vsData = !vs.metallib.empty () ? (const void*)vs.metallib.data () : (const void*)vs.source.data ();
+			int vsSize = (int)(!vs.metallib.empty () ? vs.metallib.size () : vs.source.size ());
+			const void* fsData = !fs.metallib.empty () ? (const void*)fs.metallib.data () : (const void*)fs.source.data ();
+			int fsSize = (int)(!fs.metallib.empty () ? fs.metallib.size () : fs.source.size ());
+			if (vsSize <= 0 || fsSize <= 0) return false;
+			int locs[64]; int n = 0;
+			for (auto& a : program.attributeLocations) { if (n < 64) locs[n++] = a.second; }
+			if (!cne_metal4_app_program (MetalContext::state.currentProgram, vsData, vsSize, !vs.metallib.empty (),
+				fsData, fsSize, !fs.metallib.empty (), locs, n)) return false;
+			sDefinedPrograms.insert (MetalContext::state.currentProgram);
+		}
+
+		auto vaIt = vertexArrays.find (MetalContext::state.currentVertexArray);
+		if (vaIt == vertexArrays.end ()) return false;
+		VertexArrayData& vao = vaIt->second;
+
+		int attribLoc[16], attribBuf[16], attribSize[16], attribType[16], attribNorm[16], attribOff[16];
+		int bufferIds[8], strides[8]; int bufferCount = 0, attribCount = 0;
+		for (auto& entry : vao.attribs)
+		{
+			VertexAttrib& a = entry.second;
+			if (!a.enabled || attribCount >= 16) continue;
+			int bufferSlot = -1;
+			for (int i = 0; i < bufferCount; ++i) if (bufferIds[i] == a.buffer) { bufferSlot = i; break; }
+			if (bufferSlot < 0 && bufferCount < 8) { bufferSlot = bufferCount; bufferIds[bufferCount] = a.buffer; strides[bufferCount] = a.stride; ++bufferCount; }
+			if (bufferSlot < 0) continue;
+			attribLoc[attribCount] = entry.first;
+			attribBuf[attribCount] = bufferSlot;
+			attribSize[attribCount] = a.size;
+			attribType[attribCount] = (a.type == 0x1401 /*GL_UNSIGNED_BYTE*/) ? 0 : 1;
+			attribNorm[attribCount] = a.normalized ? 1 : 0;
+			attribOff[attribCount] = (int)a.offset;
+			++attribCount;
+		}
+		for (int i = 0; i < bufferCount; ++i)
+		{
+			auto b = buffers.find (bufferIds[i]);
+			if (b != buffers.end ()) cne_metal4_app_buffer (bufferIds[i], b->second.bytes.data (), (int)b->second.bytes.size (), 0);
+		}
+
+		int textureIds[16]; int textureCount = 0;
+		std::vector<uint8_t> uniformBytes;
+		uint32_t uniformSize = 0;
+		for (auto& u : program.uniforms)
+		{
+			if (u.isSampler)
+			{
+				int tex = FastBoundTextureId (u.textureUnit);
+				auto t = textures.find (tex);
+				if (t != textures.end () && t->second.width > 0)
+				{
+					cne_metal4_app_texture (tex, t->second.width, t->second.height, t->second.isRenderTarget ? 1 : 0,
+						t->second.pixels.empty () ? nullptr : t->second.pixels.data ());
+					while (textureCount <= u.textureUnit && textureCount < 16) textureIds[textureCount++] = 0;
+					if (u.textureUnit < 16) textureIds[u.textureUnit] = tex;
+				}
+				continue;
+			}
+			const uint32_t end = u.offset + (uint32_t)u.value.size ();
+			if (end > uniformSize) uniformSize = end;
+		}
+		if (uniformSize > 0)
+		{
+			uniformBytes.assign (uniformSize, 0);
+			for (auto& u : program.uniforms)
+			{
+				if (u.isSampler || u.value.empty ()) continue;
+				if (u.offset + u.value.size () <= uniformBytes.size ())
+					std::memcpy (uniformBytes.data () + u.offset, u.value.data (), u.value.size ());
+			}
+		}
+
+		const void* indexBytes = nullptr; int indexSize = 0;
+		if (indexed)
+		{
+			const int elementBufferId = vao.elementBuffer != 0 ? vao.elementBuffer : MetalContext::state.currentElementBuffer;
+			auto b = buffers.find (elementBufferId);
+			if (b == buffers.end () || b->second.bytes.empty ()) return false;
+			indexBytes = b->second.bytes.data ();
+			indexSize = (int)b->second.bytes.size ();
+		}
+
+		const MetalContext::State& st = MetalContext::state;
+		cne_metal4_app_draw (MetalContext::state.currentProgram, st.blendEnabled ? 1 : 0,
+			Metal4BlendFactor (st.blendSrcRGB), Metal4BlendFactor (st.blendDstRGB),
+			Metal4BlendFactor (st.blendSrcAlpha), Metal4BlendFactor (st.blendDstAlpha),
+			bufferIds, strides, bufferCount,
+			attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount,
+			textureIds, textureCount,
+			uniformBytes.empty () ? nullptr : uniformBytes.data (), (int)uniformBytes.size (),
+			indexBytes, indexSize, indexType, count, 0, vertexCount, primitive);
+		return true;
+	}
 
 	// ---------------------------------------------------------------- enums
 	//
@@ -727,6 +868,7 @@
 	//@impl cne_metal_draw_indexed
 	void cne_metal_draw_indexed (int primitive, int count, int indexType, int byteOffset)
 	{
+		if (Metal4Draw (primitive, count, indexType, byteOffset, 1, true, 0)) return;
 		(void)primitive;
 		++metal::gDrawElements;
 		ProfScope prof (&gProfDrawUs);
@@ -775,6 +917,7 @@
 	//@impl cne_metal_draw_arrays
 	void cne_metal_draw_arrays (int primitive, int first, int count)
 	{
+		if (Metal4Draw (primitive, count, 0, 0, 1, false, count)) return;
 		(void)primitive;
 		++metal::gDrawArrays;
 		ProfScope prof (&gProfDrawUs);
