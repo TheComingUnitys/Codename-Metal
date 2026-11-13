@@ -83,7 +83,7 @@ Codename-Metal/
 - OS: macOS 26.6.2 (Apple Silicon / M3), `MACOSX_DEPLOYMENT_TARGET=11.0`
 - Haxe **4.3.7**, hxcpp **4.3.2**
 - Lime **8.3.2** (dev checkout) + this repository's patches (section 5.3)
-- bgfx API **v168** (Metal backend, static libraries; snapshot: bgfx `f5ce45e`, bx `57548da`, bimg `77bebb2`, 2026-11-10)
+- bgfx API **v168** (Metal backend, static libraries; snapshot: bgfx `eebf568`, bx `57548da`, bimg `2217718`, 2026-11-13)
 - Passing: main menu, cutscenes, freeplay, the full Dusttale flow, Winter Horrorland,
   pause menu; the original-engine shader corpus is fully prebuilt (`sourceCompile=0` for it),
   while mod shaders are translated at runtime on first use (the AOT cache intentionally
@@ -353,6 +353,9 @@ Expected output: `OK - Metal backend compiles against bgfx API v168 and Lime`.
 ---
 
 ## 11. Future work / roadmap (not scheduled)
+
+> Metal 4: bgfx's Metal renderer does not use the MTL4 command/encoder model; a native MTL4
+> renderer is a separate project.  See [`docs/METAL4-MIGRATION.md`](docs/METAL4-MIGRATION.md).
 
 All items that could be completed with a single app build are done and verified
 ([docs/METAL-TODO.md](docs/METAL-TODO.md) has no open actionable items). The remaining work is

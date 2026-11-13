@@ -72,7 +72,7 @@ Codename-Metal/
 - 系统：macOS 26.6.2 (Apple Silicon / M3)，`MACOSX_DEPLOYMENT_TARGET=11.0`
 - Haxe **4.3.7**，hxcpp **4.3.2**
 - Lime **8.3.2**（dev 检出）+ 本仓库补丁（见 §5.3）
-- bgfx API **v168**（Metal 后端，静态库；快照：bgfx `f5ce45e`、bx `57548da`、bimg `77bebb2`，2026-11-10）
+- bgfx API **v168**（Metal 后端，静态库；快照：bgfx `eebf568`、bx `57548da`、bimg `2217718`，2026-11-13）
 - 通过：主菜单、Cutscene、选谱、Dusttale 全流程、Winter Horrorland、暂停菜单；
   运行时 `newLibraryWithSource=0`、`sourceCompile=0`（着色器全部走 metallib）。
 

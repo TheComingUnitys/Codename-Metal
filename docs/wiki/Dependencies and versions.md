@@ -8,9 +8,9 @@
 | HaxeFlixel | 5.3.0 (`flixel-metal` fork) |
 | Haxe | 4.3.x |
 | hxcpp | 4.3.2 |
-| bgfx | API v168 (`f5ce45e39d6381093e577e80adb1abb2c611302c`) |
+| bgfx | API v168 (`eebf5686a8c5f1c77e1af2dad17b5746ba17da8f`) |
 | bx | `57548da89a07771c5b0f8a6711149be70e08a329` |
-| bimg | `77bebb28e12956bfced82bb2cf7c19ac5735b6c8` |
+| bimg | `22177183239e18d7af603e6915156371cc38d18d` |
 | Deployment target | macOS 11.0 |
 
 ## Metal forks
