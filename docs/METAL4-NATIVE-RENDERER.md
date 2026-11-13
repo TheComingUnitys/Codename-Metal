@@ -1,16 +1,18 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~15%
+## Progress: ~25%
 
-Milestones: probe ~5%, present+clear ~15%, 2D pipeline ~50%, targets/filters ~70%,
-shaders/AOT ~85%, parity + bgfx removal 100%.
+Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, full 2D pipeline
+~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx removal 100%.
 
 ## Status
 
 - Branch: `metal4` (main stays on the bgfx renderer).
 - `metal-cpp` is vendored at Apple's `27c4382b7151d55a51692cdcb27aaa98752240de`.
 - A standalone Metal 4 probe builds and runs on this machine.  The present probe also creates a
-  `CAMetalLayer`, clears to a colour and presents 30 frames through an `MTL4CommandQueue`:
+  `CAMetalLayer`, clears to a colour and presents 30 frames through an `MTL4CommandQueue`.
+- The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
+  (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 
 ```text
 METAL4 PROBE: device=Apple M3 metal4=YES
@@ -41,7 +43,9 @@ with no renderer.
 
 1. **Probe / design (done)** — metal-cpp vendored, MTL4 device/queue/allocator/command
    buffer verified.
-2. **Present + clear** — `CAMetalLayer` drawable, MTL4 command queue, clear pass, present.
+2. **Present + clear (done)** — `CAMetalLayer` drawable, MTL4 command queue, clear pass, present.
+   **First textured 2D draw (done)** — vertex buffer, sampler, texture, pipeline and argument
+   table; readback is exactly 32768 orange / 32768 blue checker pixels.
 3. **2D pipeline** — textures/samplers, vertex/index buffers, pipeline states, uniforms,
    draw submission for the GL-shaped entry points.
 4. **Targets/filters** — render targets, attachment caches, filter passes, UV flip rules.

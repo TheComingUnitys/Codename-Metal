@@ -9,17 +9,19 @@ mkdir -p "$OUT"
 COMMON=(-std=c++17 -fno-objc-arc -I "$CPP")
 FRAMEWORKS=(-framework Metal -framework Foundation -framework QuartzCore -framework AppKit)
 
-clang++ "${COMMON[@]}" \
-	"$ROOT/metal/tools/metal4_probe.mm" \
-	"$ROOT/metal/tools/metal4_private.mm" \
-	-o "$OUT/probe" "${FRAMEWORKS[@]}"
+build() {
+	clang++ "${COMMON[@]}" "$ROOT/metal/tools/$1" "$ROOT/metal/tools/metal4_private.mm" -o "$OUT/$2" "${FRAMEWORKS[@]}"
+}
 
+build metal4_probe.mm probe
 "$OUT/probe"
 
 if [ "${1:-}" = "--present" ]; then
-	clang++ "${COMMON[@]}" \
-		"$ROOT/metal/tools/metal4_present.mm" \
-		"$ROOT/metal/tools/metal4_private.mm" \
-		-o "$OUT/present" "${FRAMEWORKS[@]}"
+	build metal4_present.mm present
 	"$OUT/present"
+fi
+
+if [ "${1:-}" = "--quad" ]; then
+	build metal4_quad.mm quad
+	"$OUT/quad"
 fi
