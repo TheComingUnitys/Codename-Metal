@@ -1,6 +1,6 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~75%
+## Progress: ~80%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
 ~30%, ortho + two textures + blend ~35%, renderer core ~40%, drawable present via core
@@ -36,7 +36,8 @@ parity + bgfx removal 100%.
 - AOT metallibs load through `MTL::Library` and expose the translated entry point `xlatMtlMain`.
 - The app itself can now present through MTL4: `Metal4Clear.mm` creates an MTL4 queue on the
   existing `CAMetalLayer` and clears/presents when `CNE_METAL4_CLEAR=1`.  Game draws are still
-  bgfx-encoded, so this only verifies the app/window presentation hand-off.
+  bgfx-encoded, so this only verifies the app/window presentation hand-off.  The hook now also
+  draws a full-screen MTL4 quad with an MSL pipeline, proving app-side MTL4 draw submission.
 - `Renderer::getPipelineFromMetallib()` builds a real pipeline from the generated VS/FS
   `.metallib` pair; the metallib-pipeline probe renders red (`center=(255,0,0)`), so the AOT
   shader path is usable from MTL4 without recompiling MSL at runtime.
