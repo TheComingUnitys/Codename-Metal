@@ -15,6 +15,7 @@ extern "C" void cne_mtl_install_probe (void);
 extern "C" int cne_metal4_clear_init (void* layer);
 extern "C" int cne_metal4_clear_frame (void* layer);
 extern "C" void cne_metal4_clear_shutdown (void);
+extern "C" void cne_metal4_force_upload_texture (int width, int height, const void* rgba);
 extern "C" void cne_mtl_note_bgfx_init_boundary (void);
 extern "C" int cne_mtl_bgfx_internal_source_compiles (void);
 extern "C" void lime_install_menu_tracking_pump (void);
@@ -949,13 +950,6 @@ namespace metal {
 			std::fflush (stderr);
 		}
 
-		if (gMetal4ClearMode)
-		{
-			cne_metal4_clear_frame (layer);
-			++gFrameIndex;
-			return;
-		}
-
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the
 		// CAMetalLayer for a while.  Coming back left the world black (HUD, drawn straight to
 		// the backbuffer, survived) because the offscreen render targets kept state from the
@@ -1279,7 +1273,7 @@ namespace metal {
 		metal::ApplyFrameViewOrder ();
 		const double submitMs = SinceProcessStartMs () - submitStartMs;
 
-		const bool captureScreen = gScreenCaptureRequested;
+		const bool captureScreen = gMetal4ClearMode || gScreenCaptureRequested;
 		if (captureScreen) bgfx::requestScreenShot (BGFX_INVALID_HANDLE, "cne-readpixels-cache");
 
 		if (traceFrame)
@@ -1288,6 +1282,30 @@ namespace metal {
 			std::fflush (stderr);
 		}
 		bgfx::frame ();
+
+		if (gMetal4ClearMode)
+		{
+			static std::vector<uint8_t> captureRaw;
+			static std::vector<uint8_t> captureRgba;
+			int cw = 0, ch = 0, cpitch = 0, cfmt = 0;
+			if (MetalContext::CaptureScreenPixels (captureRaw, cw, ch, cpitch, cfmt) && cw > 0 && ch > 0)
+			{
+				captureRgba.resize ((size_t)cw * (size_t)ch * 4);
+				const bool bgra = (cfmt == (int)bgfx::TextureFormat::BGRA8);
+				for (int row = 0; row < ch; ++row)
+				{
+					const uint8_t* s = captureRaw.data () + (size_t)row * (size_t)cpitch;
+					uint8_t* d = captureRgba.data () + (size_t)row * (size_t)cw * 4;
+					for (int col = 0; col < cw; ++col)
+					{
+						d[0] = s[bgra ? 2 : 0]; d[1] = s[1]; d[2] = s[bgra ? 0 : 2]; d[3] = s[3];
+						s += 4; d += 4;
+					}
+				}
+				cne_metal4_force_upload_texture (cw, ch, captureRgba.data ());
+			}
+			cne_metal4_clear_frame (layer);
+		}
 		if (traceFrame)
 		{
 			std::fprintf (stderr, "[cne-trace] frame%u after bgfx::frame\n", frameIndex);

@@ -134,6 +134,25 @@ extern "C" void cne_metal4_upload_texture (int width, int height, const void* da
 	if (gArgumentTable != nil) [gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
 }
 
+extern "C" void cne_metal4_force_upload_texture (int width, int height, const void* data)
+{
+	if (gDevice == nil || width <= 0 || height <= 0 || data == nullptr) return;
+	if (gEngineTexture == nil || gEngineWidth != (uint32_t)width || gEngineHeight != (uint32_t)height)
+	{
+		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+			width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+		td.usage = MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModeShared;
+		gEngineTexture = [gDevice newTextureWithDescriptor:td];
+		gEngineWidth = (uint32_t)width;
+		gEngineHeight = (uint32_t)height;
+	}
+	if (gEngineTexture == nil) return;
+	[gEngineTexture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
+		mipmapLevel:0 withBytes:data bytesPerRow:(NSUInteger)width * 4];
+	if (gArgumentTable != nil) [gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
+}
+
 extern "C" int cne_metal4_clear_frame (void* layerPtr)
 {
 	if (gQueue == nil || gCommandBuffer == nil) return 0;
