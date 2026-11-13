@@ -55,6 +55,8 @@ namespace cne::metal4
 		void drawIndexed (MTL::PrimitiveType type, uint32_t indexCount, MTL::IndexType indexType,
 			MTL::GPUAddress indexBuffer, uint32_t indexBufferLength, uint32_t instanceCount = 1,
 			int32_t baseVertex = 0, uint32_t baseInstance = 0);
+		void setScissorRect (uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+		void setViewport (float x, float y, float width, float height);
 		void endFrame ();
 		void endFrameAndPresent (CA::MetalDrawable* drawable);
 

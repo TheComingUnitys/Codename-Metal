@@ -155,6 +155,18 @@ namespace cne::metal4
 		_encoder = nullptr;
 	}
 
+	void Renderer::setScissorRect (uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+	{
+		MTL::ScissorRect r = { (NS::UInteger)x, (NS::UInteger)y, (NS::UInteger)width, (NS::UInteger)height };
+		_encoder->setScissorRect (r);
+	}
+
+	void Renderer::setViewport (float x, float y, float width, float height)
+	{
+		MTL::Viewport v = { (double)x, (double)y, (double)width, (double)height, 0.0, 1.0 };
+		_encoder->setViewport (v);
+	}
+
 	void Renderer::endFrame ()
 	{
 		_encoder->endEncoding ();
