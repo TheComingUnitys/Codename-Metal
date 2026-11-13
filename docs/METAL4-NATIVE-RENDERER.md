@@ -1,11 +1,11 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~45%
+## Progress: ~50%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
 ~30%, ortho + two textures + blend ~35%, renderer core ~40%, drawable present via core
-~45%, full 2D pipeline ~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx
-removal 100%.
+~45%, batched 2D draw with alpha ~50%, GL-shaped backend ~60%, targets/filters ~75%,
+shaders/AOT ~85%, parity + bgfx removal 100%.
 
 ## Status
 
@@ -23,6 +23,8 @@ removal 100%.
   output (`bg=(0,0,51) red=(255,0,0) blue=(0,0,255)`).
 - `metal4_window` drives the same renderer against a real `CAMetalLayer` drawable and presents
   120 frames (`presented=120`).
+- The batch probe draws 100 quads (600 vertices) in one call with per-vertex colour and alpha
+  blending; readback confirms the blended colour (`sprite=(128,0,13)` over `bg=(0,0,26)`).
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 
