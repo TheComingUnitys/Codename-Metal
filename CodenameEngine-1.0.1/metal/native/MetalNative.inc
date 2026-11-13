@@ -859,7 +859,7 @@
 			uploadFormat = GL_RGBA;
 		}
 
-		if (level == 0 && source != nullptr && uploadFormat == GL_RGBA && type == GL_UNSIGNED_BYTE && cne_metal4_active ())
+		if (level == 0 && source != nullptr && (uploadFormat == GL_RGBA || uploadFormat == GL_BGRA) && type == GL_UNSIGNED_BYTE && cne_metal4_active ())
 		{
 			cne_metal4_upload_texture (width, height, source);
 		}

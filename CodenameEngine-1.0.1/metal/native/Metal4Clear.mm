@@ -5,6 +5,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #include <cstdio>
+#include <cstdarg>
 
 static id<MTLDevice> gDevice = nil;
 static id<MTL4CommandQueue> gQueue = nil;
@@ -14,9 +15,19 @@ static id<MTLRenderPipelineState> gPipeline = nil;
 static id<MTLTexture> gTexture = nil;
 static id<MTLSamplerState> gSampler = nil;
 static id<MTL4ArgumentTable> gArgumentTable = nil;
+static uint32_t gFrameCounter = 0;
 static id<MTLTexture> gEngineTexture = nil;
 static uint32_t gEngineWidth = 0;
 static uint32_t gEngineHeight = 0;
+static uint64_t gEngineUploads = 0;
+static uint64_t gBestScore = 0;
+static FILE* gLog = nullptr;
+static void M4Log (const char* fmt, ...)
+{
+	if (gLog == nullptr) gLog = fopen ("/tmp/cne-metal4.log", "w");
+	if (gLog == nullptr) return;
+	va_list args; va_start (args, fmt); vfprintf (gLog, fmt, args); va_end (args); fflush (gLog);
+}
 
 extern "C" int cne_metal4_clear_init (void* layerPtr)
 {
@@ -88,6 +99,18 @@ extern "C" int cne_metal4_active (void)
 extern "C" void cne_metal4_upload_texture (int width, int height, const void* data)
 {
 	if (gDevice == nil || width <= 0 || height <= 0 || data == nullptr) return;
+	// Score RGB content (ignore the alpha channel: empty framebuffer mirrors are
+	// usually transparent-black).  Keep the texture with the most coloured pixels.
+	const uint8_t* bytes = (const uint8_t*)data;
+	const size_t pixels = (size_t)width * (size_t)height;
+	const size_t stride = pixels > (size_t)(1u << 20) ? pixels / (size_t)(1u << 20) : 1;
+	uint64_t score = 0;
+	for (size_t i = 0; i < pixels; i += stride) {
+		const uint8_t* p = bytes + i * 4;
+		if (p[0] || p[1] || p[2]) ++score;
+	}
+	if (score <= gBestScore) return;
+	gBestScore = score;
 	if (gEngineTexture == nil || gEngineWidth != (uint32_t)width || gEngineHeight != (uint32_t)height)
 	{
 		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -98,6 +121,8 @@ extern "C" void cne_metal4_upload_texture (int width, int height, const void* da
 		gEngineWidth = (uint32_t)width;
 		gEngineHeight = (uint32_t)height;
 	}
+	++gEngineUploads;
+	M4Log ("upload #%llu %dx%d score=%llu best=%llu\n", (unsigned long long)gEngineUploads, width, height, (unsigned long long)score, (unsigned long long)gBestScore);
 	if (gEngineTexture == nil) return;
 	[gEngineTexture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
 		mipmapLevel:0 withBytes:data bytesPerRow:(NSUInteger)width * 4];
@@ -109,6 +134,7 @@ extern "C" int cne_metal4_clear_frame (void* layerPtr)
 	if (gQueue == nil || gCommandBuffer == nil) return 0;
 	CAMetalLayer* layer = (__bridge CAMetalLayer*)layerPtr;
 	if (layer == nil) return 0;
+	++gFrameCounter;
 	id<CAMetalDrawable> drawable = [layer nextDrawable];
 	if (drawable == nil) return 0;
 
@@ -121,7 +147,10 @@ extern "C" int cne_metal4_clear_frame (void* layerPtr)
 	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 	pass.colorAttachments[0].clearColor = MTLClearColorMake (0.05, 0.15, 0.30, 1.0);
 	id<MTL4RenderCommandEncoder> enc = [gCommandBuffer renderCommandEncoderWithDescriptor:pass];
-	if (gPipeline != nil) {
+	if (gPipeline != nil && gEngineTexture != nil) {
+		[gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
+		if ((gFrameCounter % 60) == 0)
+			M4Log ("frame=%u uploads=%llu engine=%ux%u\n", gFrameCounter, (unsigned long long)gEngineUploads, gEngineWidth, gEngineHeight);
 		[enc setRenderPipelineState:gPipeline];
 		[enc setArgumentTable:gArgumentTable atStages:MTLRenderStageVertex | MTLRenderStageFragment];
 		[enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
