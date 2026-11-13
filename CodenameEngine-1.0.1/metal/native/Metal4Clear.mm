@@ -14,6 +14,9 @@ static id<MTLRenderPipelineState> gPipeline = nil;
 static id<MTLTexture> gTexture = nil;
 static id<MTLSamplerState> gSampler = nil;
 static id<MTL4ArgumentTable> gArgumentTable = nil;
+static id<MTLTexture> gEngineTexture = nil;
+static uint32_t gEngineWidth = 0;
+static uint32_t gEngineHeight = 0;
 
 extern "C" int cne_metal4_clear_init (void* layerPtr)
 {
@@ -70,9 +73,35 @@ extern "C" int cne_metal4_clear_init (void* layerPtr)
 	atd.initializeBindings = YES;
 	gArgumentTable = [gDevice newArgumentTableWithDescriptor:atd error:&error];
 	if (gArgumentTable == nil) { fprintf(stderr, "[cne-metal4] argtable: %s\n", [[error localizedDescription] UTF8String]); return 0; }
-	[gArgumentTable setTexture:gTexture.gpuResourceID atIndex:0];
+	[gArgumentTable setTexture:gEngineTexture != nil ? gEngineTexture.gpuResourceID : gTexture.gpuResourceID atIndex:0];
 	[gArgumentTable setSamplerState:gSampler.gpuResourceID atIndex:0];
 	return 1;
+}
+
+extern "C" int cne_metal4_active (void)
+{
+	return gQueue != nil ? 1 : 0;
+}
+
+// Called from the engine's native texture upload path.  Keeps the first uploaded RGBA
+// texture so the MTL4 presentation hook can prove real engine texture data is sampled.
+extern "C" void cne_metal4_upload_texture (int width, int height, const void* data)
+{
+	if (gDevice == nil || width <= 0 || height <= 0 || data == nullptr) return;
+	if (gEngineTexture == nil || gEngineWidth != (uint32_t)width || gEngineHeight != (uint32_t)height)
+	{
+		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+			width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+		td.usage = MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModeShared;
+		gEngineTexture = [gDevice newTextureWithDescriptor:td];
+		gEngineWidth = (uint32_t)width;
+		gEngineHeight = (uint32_t)height;
+	}
+	if (gEngineTexture == nil) return;
+	[gEngineTexture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
+		mipmapLevel:0 withBytes:data bytesPerRow:(NSUInteger)width * 4];
+	if (gArgumentTable != nil) [gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
 }
 
 extern "C" int cne_metal4_clear_frame (void* layerPtr)
@@ -111,6 +140,7 @@ extern "C" void cne_metal4_clear_shutdown (void)
 {
 	gArgumentTable = nil;
 	gSampler = nil;
+	gEngineTexture = nil;
 	gTexture = nil;
 	gPipeline = nil;
 	gCommandBuffer = nil;

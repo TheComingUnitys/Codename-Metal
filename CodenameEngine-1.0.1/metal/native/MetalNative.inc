@@ -16,6 +16,9 @@
 // the old one.
 // ============================================================================
 
+	extern "C" int cne_metal4_active (void);
+	extern "C" void cne_metal4_upload_texture (int width, int height, const void* data);
+
 	// ---------------------------------------------------------------- enums
 	//
 	// The native path deliberately uses its OWN small enums instead of GL's, so
@@ -854,6 +857,11 @@
 			else expanded.assign ((size_t)width * (size_t)height * 4, 0);
 			source = expanded.data ();
 			uploadFormat = GL_RGBA;
+		}
+
+		if (level == 0 && source != nullptr && uploadFormat == GL_RGBA && type == GL_UNSIGNED_BYTE && cne_metal4_active ())
+		{
+			cne_metal4_upload_texture (width, height, source);
 		}
 
 		texture->width = width;
