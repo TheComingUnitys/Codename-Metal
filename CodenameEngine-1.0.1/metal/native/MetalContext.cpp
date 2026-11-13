@@ -16,6 +16,7 @@ extern "C" int cne_metal4_clear_init (void* layer);
 extern "C" int cne_metal4_clear_frame (void* layer);
 extern "C" void cne_metal4_clear_shutdown (void);
 extern "C" void cne_metal4_force_upload_texture (int width, int height, const void* rgba);
+extern "C" void cne_metal4_force_upload_bgra (int width, int height, const void* data, int pitch);
 extern "C" void cne_mtl_note_bgfx_init_boundary (void);
 extern "C" int cne_mtl_bgfx_internal_source_compiles (void);
 extern "C" void lime_install_menu_tracking_pump (void);
@@ -1290,19 +1291,26 @@ namespace metal {
 			int cw = 0, ch = 0, cpitch = 0, cfmt = 0;
 			if (MetalContext::CaptureScreenPixels (captureRaw, cw, ch, cpitch, cfmt) && cw > 0 && ch > 0)
 			{
-				captureRgba.resize ((size_t)cw * (size_t)ch * 4);
-				const bool bgra = (cfmt == (int)bgfx::TextureFormat::BGRA8);
-				for (int row = 0; row < ch; ++row)
+				if (cfmt == (int)bgfx::TextureFormat::BGRA8)
 				{
-					const uint8_t* s = captureRaw.data () + (size_t)row * (size_t)cpitch;
-					uint8_t* d = captureRgba.data () + (size_t)row * (size_t)cw * 4;
-					for (int col = 0; col < cw; ++col)
-					{
-						d[0] = s[bgra ? 2 : 0]; d[1] = s[1]; d[2] = s[bgra ? 0 : 2]; d[3] = s[3];
-						s += 4; d += 4;
-					}
+					// Upload the native BGRA bytes directly: no per-pixel CPU swizzle.
+					cne_metal4_force_upload_bgra (cw, ch, captureRaw.data (), cpitch);
 				}
-				cne_metal4_force_upload_texture (cw, ch, captureRgba.data ());
+				else
+				{
+					captureRgba.resize ((size_t)cw * (size_t)ch * 4);
+					for (int row = 0; row < ch; ++row)
+					{
+						const uint8_t* s = captureRaw.data () + (size_t)row * (size_t)cpitch;
+						uint8_t* d = captureRgba.data () + (size_t)row * (size_t)cw * 4;
+						for (int col = 0; col < cw; ++col)
+						{
+							d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+							s += 4; d += 4;
+						}
+					}
+					cne_metal4_force_upload_texture (cw, ch, captureRgba.data ());
+				}
 			}
 			cne_metal4_clear_frame (layer);
 		}

@@ -34,6 +34,8 @@ extern "C" int cne_metal4_clear_init (void* layerPtr)
 {
 	CAMetalLayer* layer = (__bridge CAMetalLayer*)layerPtr;
 	if (layer == nil) return 0;
+	// bgfx presents the same frame first; don't make the second MTL4 present wait for vsync.
+	layer.displaySyncEnabled = NO;
 	gDevice = MTLCreateSystemDefaultDevice ();
 	if (gDevice == nil || ![gDevice supportsFamily:MTLGPUFamilyMetal4]) return 0;
 	gQueue = [gDevice newMTL4CommandQueue];
@@ -131,6 +133,25 @@ extern "C" void cne_metal4_upload_texture (int width, int height, const void* da
 	if (gEngineTexture == nil) return;
 	[gEngineTexture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
 		mipmapLevel:0 withBytes:data bytesPerRow:(NSUInteger)width * 4];
+	if (gArgumentTable != nil) [gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
+}
+
+extern "C" void cne_metal4_force_upload_bgra (int width, int height, const void* data, int pitch)
+{
+	if (gDevice == nil || width <= 0 || height <= 0 || data == nullptr) return;
+	if (gEngineTexture == nil || gEngineWidth != (uint32_t)width || gEngineHeight != (uint32_t)height)
+	{
+		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+			width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+		td.usage = MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModeShared;
+		gEngineTexture = [gDevice newTextureWithDescriptor:td];
+		gEngineWidth = (uint32_t)width;
+		gEngineHeight = (uint32_t)height;
+	}
+	if (gEngineTexture == nil) return;
+	[gEngineTexture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
+		mipmapLevel:0 withBytes:data bytesPerRow:(NSUInteger)pitch];
 	if (gArgumentTable != nil) [gArgumentTable setTexture:gEngineTexture.gpuResourceID atIndex:0];
 }
 
