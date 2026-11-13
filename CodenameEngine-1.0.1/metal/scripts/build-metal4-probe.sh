@@ -19,4 +19,5 @@ case "${1:-}" in
 	--window)   buildrenderer metal4_window.mm window ;;
 	--batch)    buildrenderer metal4_batch.mm batch ;;
 	--cache)    buildrenderer metal4_cache.mm cache ;;
+	--filter)   buildrenderer metal4_filter.mm filter ;;
 esac
