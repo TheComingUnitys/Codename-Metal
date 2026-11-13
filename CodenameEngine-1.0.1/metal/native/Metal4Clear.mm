@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #include <cstdio>
 #include <cstdarg>
+#include <unordered_set>
 
 static id<MTLDevice> gDevice = nil;
 static id<MTL4CommandQueue> gQueue = nil;
@@ -103,14 +104,18 @@ extern "C" void cne_metal4_upload_texture (int width, int height, const void* da
 	// usually transparent-black).  Keep the texture with the most coloured pixels.
 	const uint8_t* bytes = (const uint8_t*)data;
 	const size_t pixels = (size_t)width * (size_t)height;
-	const size_t stride = pixels > (size_t)(1u << 20) ? pixels / (size_t)(1u << 20) : 1;
-	uint64_t score = 0;
+	const size_t stride = pixels > (size_t)(1u << 16) ? pixels / (size_t)(1u << 16) : 1;
+	std::unordered_set<uint32_t> colors;
+	colors.reserve(4096);
 	for (size_t i = 0; i < pixels; i += stride) {
 		const uint8_t* p = bytes + i * 4;
-		if (p[0] || p[1] || p[2]) ++score;
+		colors.insert(((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | (uint32_t)p[2]);
 	}
-	if (score <= gBestScore) return;
-	gBestScore = score;
+	uint64_t score = (uint64_t)colors.size();
+	const bool liveFrame = width >= 1024 && height >= 512;
+	if (!liveFrame && score <= gBestScore) return;
+	if (liveFrame) gBestScore = score;
+	else gBestScore = score;
 	if (gEngineTexture == nil || gEngineWidth != (uint32_t)width || gEngineHeight != (uint32_t)height)
 	{
 		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
