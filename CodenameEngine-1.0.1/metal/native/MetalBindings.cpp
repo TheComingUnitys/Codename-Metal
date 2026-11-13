@@ -17,6 +17,11 @@
 
 #include <bgfx/bgfx.h>
 
+extern "C" int cne_metal4_app_active (void);
+extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
+extern "C" void cne_metal4_app_viewport (int x, int y, int w, int h);
+extern "C" void cne_metal4_app_scissor (int enabled, int x, int y, int w, int h);
+
 #include <algorithm>
 #include <unordered_map>
 #include <chrono>
@@ -8037,6 +8042,29 @@ namespace lime {
 		CNE_COV ("lime_gl_bind_framebuffer");
 		if (target != GL_FRAMEBUFFER) return;
 		MetalContext::state.currentFramebuffer = framebuffer;
+
+		if (cne_metal4_app_active ())
+		{
+			if (framebuffer == 0)
+			{
+				cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
+					MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
+					MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
+			}
+			else
+			{
+				auto fb = framebuffers.find (framebuffer);
+				if (fb != framebuffers.end ())
+				{
+					auto tx = textures.find (fb->second.texture);
+					int tw = tx != textures.end () ? tx->second.width : (int)MetalContext::state.backbufferWidth;
+					int th = tx != textures.end () ? tx->second.height : (int)MetalContext::state.backbufferHeight;
+					cne_metal4_app_target (fb->second.texture, tw, th, 0,
+						MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
+						MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
+				}
+			}
+		}
 
 		// [cne-clear] pair the bind/clear sequence: a render target that is bound but never
 		// cleared keeps the previous frame's alpha, which makes a semi-transparent camera

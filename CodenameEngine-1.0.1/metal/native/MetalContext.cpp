@@ -975,9 +975,11 @@ namespace metal {
 		if (gMetal4Native)
 		{
 			cne_metal4_app_frame_begin ();
+			static const bool debugClear = std::getenv ("CNE_METAL4_DEBUG_CLEAR") != nullptr;
 			cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
-				MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
-				MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
+				debugClear ? 1.0f : MetalContext::state.clearColor[0],
+				debugClear ? 0.0f : MetalContext::state.clearColor[1],
+				debugClear ? 1.0f : MetalContext::state.clearColor[2], 1.0f, 1);
 		}
 
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the

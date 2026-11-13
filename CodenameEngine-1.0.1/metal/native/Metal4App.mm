@@ -17,6 +17,7 @@ static id<MTLDevice> gDevice = nil;
 static id<MTL4CommandQueue> gQueue = nil;
 static id<MTL4CommandAllocator> gAllocator = nil;
 static id<MTL4CommandBuffer> gCommandBuffer = nil;
+static id<MTLSamplerState> gSampler = nil;
 static CAMetalLayer* gLayer = nil;
 static id<CAMetalDrawable> gDrawable = nil;
 static id<MTL4RenderCommandEncoder> gEncoder = nil;
@@ -30,6 +31,7 @@ static std::unordered_map<std::string, id> gPipelines;
 static int gViewport[4] = {0,0,0,0};
 static bool gScissor = false; static int gScissorRect[4] = {0,0,0,0};
 static bool gBegun = false;
+static std::vector<id> gTransient;
 
 static id LoadLibrary(const void* data, int size, int isMetallib)
 {
@@ -67,8 +69,11 @@ static void EndEncoder()
 	if (gEncoder != nil) { [gEncoder endEncoding]; gEncoder = nil; }
 }
 
+static int sFrameNo = 0;
 static void BeginTarget(int textureId, int w, int h, int isScreen, float r, float g, float b, float a, int clearColor)
 {
+	static int sTargetLog = 0;
+	if (sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d\\n", sFrameNo, isScreen, textureId, w, h, clearColor); ++sTargetLog; }
 	EndEncoder();
 	gPass = [MTL4RenderPassDescriptor new];
 	gPass.renderTargetWidth = (NSUInteger)w;
@@ -92,10 +97,10 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 	gTarget = isScreen ? -1 : textureId;
 }
 
-static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA)
+static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, MTLPixelFormat format)
 {
 	std::string key = std::to_string((int)[prog.vs hash]) + ":" + std::to_string((int)[prog.fs hash]) + ":";
-	key += std::to_string(blendEnabled) + "," + std::to_string(srcRGB) + "," + std::to_string(dstRGB) + "," + std::to_string(srcA) + "," + std::to_string(dstA);
+	key += std::to_string(blendEnabled) + "," + std::to_string(srcRGB) + "," + std::to_string(dstRGB) + "," + std::to_string(srcA) + "," + std::to_string(dstA) + ":" + std::to_string((int)format);
 	for (int i = 0; i < attribCount; ++i) { key += "|" + std::to_string(attribLoc[i]) + "," + std::to_string(attribBuf[i]) + "," + std::to_string(attribSize[i]) + "," + std::to_string(attribType[i]) + "," + std::to_string(attribNorm[i]) + "," + std::to_string(attribOff[i]); }
 	for (int i = 0; i < bufferCount; ++i) key += "/" + std::to_string(strides[i]);
 	auto found = gPipelines.find(key);
@@ -108,6 +113,7 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 	pd.vertexFunction = vfn;
 	pd.fragmentFunction = ffn;
 	MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+	bool usedSlots[8] = {false,false,false,false,false,false,false,false};
 	for (int i = 0; i < attribCount; ++i) {
 		MTLVertexAttributeDescriptor* ad = vd.attributes[(NSUInteger)attribLoc[i]];
 		MTLVertexFormat fmt = MTLVertexFormatFloat2;
@@ -119,6 +125,19 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 		ad.format = fmt;
 		ad.bufferIndex = (NSUInteger)(attribBuf[i] + 1);
 		ad.offset = (NSUInteger)attribOff[i];
+		if (attribLoc[i] >= 0 && attribLoc[i] < 8) usedSlots[attribLoc[i]] = true;
+	}
+	// The translator emits every shader attribute (a_tangent/a_bitangent/...) with a
+	// sequential MSL slot even when the sprite path never supplies data for it.  Metal
+	// still requires every [[attribute(n)]] to exist in the descriptor; add dummy
+	// float4 attributes backed by the first vertex buffer.  They are unused by the 2D
+	// shaders that take this path.
+	for (int slot = 0; slot < 8; ++slot) {
+		if (usedSlots[slot]) continue;
+		MTLVertexAttributeDescriptor* ad = vd.attributes[(NSUInteger)slot];
+		ad.format = MTLVertexFormatFloat4;
+		ad.bufferIndex = 1;
+		ad.offset = 0;
 	}
 	for (int i = 0; i < bufferCount; ++i) {
 		MTLVertexBufferLayoutDescriptor* bl = vd.layouts[(NSUInteger)(i + 1)];
@@ -126,7 +145,7 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 		bl.stepFunction = MTLVertexStepFunctionPerVertex;
 	}
 	pd.vertexDescriptor = vd;
-	pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+	pd.colorAttachments[0].pixelFormat = format;
 	if (blendEnabled) {
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = (MTLBlendFactor)srcRGB;
@@ -147,6 +166,12 @@ extern "C" int cne_metal4_app_init(void* layerPtr, int width, int height)
 	gLayer = (__bridge CAMetalLayer*)layerPtr;
 	gDevice = MTLCreateSystemDefaultDevice();
 	if (gLayer == nil || gDevice == nil || ![gDevice supportsFamily:MTLGPUFamilyMetal4]) return 0;
+	MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
+	sd.minFilter = MTLSamplerMinMagFilterLinear;
+	sd.magFilter = MTLSamplerMinMagFilterLinear;
+	sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+	sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+	gSampler = [gDevice newSamplerStateWithDescriptor:sd];
 	gQueue = [gDevice newMTL4CommandQueue];
 	gAllocator = [gDevice newCommandAllocator];
 	gCommandBuffer = [gDevice newCommandBuffer];
@@ -159,6 +184,7 @@ extern "C" int cne_metal4_app_active(void) { return gQueue != nil ? 1 : 0; }
 
 extern "C" void cne_metal4_app_frame_begin(void)
 {
+	gTransient.clear();
 	if (!gBegun) { [gCommandBuffer beginCommandBufferWithAllocator:gAllocator]; gBegun = true; }
 }
 extern "C" void cne_metal4_app_target(int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor)
@@ -168,6 +194,8 @@ extern "C" void cne_metal4_app_target(int textureId, int width, int height, int 
 }
 extern "C" void cne_metal4_app_frame_end(void)
 {
+	++sFrameNo;
+	fprintf(stderr, "[cne-metal4] frame_end f=%d target=%d drawable=%p\\n", sFrameNo, gTarget, (__bridge void*)gDrawable);
 	if (gTarget == -2) BeginTarget(-1, gWidth, gHeight, 1, 0,0,0,1, 1);
 	EndEncoder();
 	[gCommandBuffer endCommandBuffer];
@@ -192,13 +220,15 @@ extern "C" int cne_metal4_app_program(int id,const void* vsData,int vsSize,int v
 extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int dstRGB,int srcA,int dstA,
 	const int* bufferIds,const int* strides,int bufferCount,
 	const int* attribLoc,const int* attribBuf,const int* attribSize,const int* attribType,const int* attribNorm,const int* attribOff,int attribCount,
-	const int* textureIds,int textureCount,const void* uniformBytes,int uniformSize,
+	const int* textureIds,int textureCount,const void* vsUniformBytes,int vsUniformSize,const void* fsUniformBytes,int fsUniformSize,
 	const void* indexBytes,int indexSize,int indexType,int indexCount,int baseVertex,int vertexCount,int primitive)
 {
 	auto progIt = gPrograms.find(program);
 	if (progIt == gPrograms.end()) return;
 	if (gEncoder == nil) return;
-	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA);
+	static int sDrawLog = 0;
+	if (sDrawLog < 12) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d idx=%d count=%d target=%d\\n", program, bufferCount, attribCount, textureCount, indexSize, indexCount, gTarget); ++sDrawLog; }
+	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, (gTarget == -1 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm));
 	if (pso == nil) return;
 	[gEncoder setRenderPipelineState:pso];
 
@@ -207,18 +237,24 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	atd.maxTextureBindCount = (NSUInteger)(textureCount > 0 ? textureCount : 1);
 	atd.maxSamplerStateBindCount = 1;
 	atd.initializeBindings = YES;
-	id<MTL4ArgumentTable> table = [gDevice newArgumentTableWithDescriptor:atd error:nil];
-	id ub = uniformSize > 0 ? [gDevice newBufferWithBytes:uniformBytes length:(NSUInteger)uniformSize options:MTLResourceStorageModeShared] : nil;
-	if (ub != nil) [table setAddress:[ub gpuAddress] atIndex:0];
+	atd.supportAttributeStrides = YES;
+	id<MTL4ArgumentTable> tableVS = [gDevice newArgumentTableWithDescriptor:atd error:nil];
+	id<MTL4ArgumentTable> tableFS = [gDevice newArgumentTableWithDescriptor:atd error:nil];
+	id ubVS = vsUniformSize > 0 ? [gDevice newBufferWithBytes:vsUniformBytes length:(NSUInteger)vsUniformSize options:MTLResourceStorageModeShared] : nil;
+	id ubFS = fsUniformSize > 0 ? [gDevice newBufferWithBytes:fsUniformBytes length:(NSUInteger)fsUniformSize options:MTLResourceStorageModeShared] : nil;
+	if (ubVS != nil) { gTransient.push_back(ubVS); [tableVS setAddress:[ubVS gpuAddress] atIndex:0]; }
+	if (ubFS != nil) { gTransient.push_back(ubFS); [tableFS setAddress:[ubFS gpuAddress] atIndex:0]; }
 	for (int i = 0; i < bufferCount; ++i) {
 		auto bi = gBuffers.find(bufferIds[i]);
-		if (bi != gBuffers.end()) [table setAddress:[bi->second gpuAddress] attributeStride:(NSUInteger)strides[i] atIndex:(NSUInteger)(i + 1)];
+		if (bi != gBuffers.end()) [tableVS setAddress:[bi->second gpuAddress] attributeStride:(NSUInteger)strides[i] atIndex:(NSUInteger)(i + 1)];
 	}
+	if (gSampler != nil) [tableFS setSamplerState:[gSampler gpuResourceID] atIndex:0];
 	for (int i = 0; i < textureCount && i < 16; ++i) {
 		auto ti = gTextures.find(textureIds[i]);
-		if (ti != gTextures.end()) [table setTexture:(MTLResourceID)[ti->second gpuResourceID] atIndex:(NSUInteger)i];
+		if (ti != gTextures.end()) [tableFS setTexture:(MTLResourceID)[ti->second gpuResourceID] atIndex:(NSUInteger)i];
 	}
-	[gEncoder setArgumentTable:table atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+	[gEncoder setArgumentTable:tableVS atStages:MTLRenderStageVertex];
+	[gEncoder setArgumentTable:tableFS atStages:MTLRenderStageFragment];
 
 	MTLPrimitiveType pt = MTLPrimitiveTypeTriangle;
 	if (primitive == 1) pt = MTLPrimitiveTypeTriangleStrip;

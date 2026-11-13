@@ -27,7 +27,7 @@
 	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels);
 	extern "C" void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
 	extern "C" int cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib, const void* fsData, int fsSize, int fsIsMetallib, const int* attribLocations, int attribCount);
-	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const void* uniformBytes, int uniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
+	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const void* vsUniformBytes, int vsUniformSize, const void* fsUniformBytes, int fsUniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
 
 	/** GL -> Metal blend factor (the enum values differ). */
 	static int Metal4BlendFactor (int gl)
@@ -82,6 +82,14 @@
 		if (vaIt == vertexArrays.end ()) return false;
 		VertexArrayData& vao = vaIt->second;
 
+		static int sSlotLog = 0;
+		if (sSlotLog < 8)
+		{
+			std::fprintf (stderr, "[cne-metal4] slots prog=%d:", MetalContext::state.currentProgram);
+			auto sl = attribSlots.find (MetalContext::state.currentProgram);
+			if (sl != attribSlots.end ()) for (auto& e : sl->second) std::fprintf (stderr, " %d->%d", (int)e.first, (int)e.second);
+			std::fprintf (stderr, "\n"); ++sSlotLog;
+		}
 		int attribLoc[16], attribBuf[16], attribSize[16], attribType[16], attribNorm[16], attribOff[16];
 		int bufferIds[8], strides[8]; int bufferCount = 0, attribCount = 0;
 		for (auto& entry : vao.attribs)
@@ -92,7 +100,16 @@
 			for (int i = 0; i < bufferCount; ++i) if (bufferIds[i] == a.buffer) { bufferSlot = i; break; }
 			if (bufferSlot < 0 && bufferCount < 8) { bufferSlot = bufferCount; bufferIds[bufferCount] = a.buffer; strides[bufferCount] = a.stride; ++bufferCount; }
 			if (bufferSlot < 0) continue;
-			attribLoc[attribCount] = entry.first;
+			// The translator numbers MSL attributes sequentially in declaration order
+			// (a_position=0, a_texcoord=1, ...), which is what the shader's
+			// [[attribute(n)]] expects.  GL locations (3,4,5,...) are a different space.
+			const int mslLocation = attribCount;
+			attribLoc[attribCount] = mslLocation;
+			if (attribCount < 12)
+			{
+				static int sAttribLog = 0;
+				if (sAttribLog < 24) { std::fprintf (stderr, "[cne-metal4] attrib prog=%d gl=%d msl=%d buf=%d size=%d stride=%d off=%d\n", MetalContext::state.currentProgram, entry.first, mslLocation, a.buffer, a.size, a.stride, (int)a.offset); ++sAttribLog; }
+			}
 			attribBuf[attribCount] = bufferSlot;
 			attribSize[attribCount] = a.size;
 			attribType[attribCount] = (a.type == 0x1401 /*GL_UNSIGNED_BYTE*/) ? 0 : 1;
@@ -127,15 +144,34 @@
 			const uint32_t end = u.offset + (uint32_t)u.value.size ();
 			if (end > uniformSize) uniformSize = end;
 		}
-		if (uniformSize > 0)
+		static int sUniformLog = 0;
+		if (sUniformLog < 6)
 		{
-			uniformBytes.assign (uniformSize, 0);
+			std::fprintf (stderr, "[cne-metal4] uniforms prog=%d size=%u:", MetalContext::state.currentProgram, uniformSize);
 			for (auto& u : program.uniforms)
 			{
-				if (u.isSampler || u.value.empty ()) continue;
-				if (u.offset + u.value.size () <= uniformBytes.size ())
-					std::memcpy (uniformBytes.data () + u.offset, u.value.data (), u.value.size ());
+				std::string nm; for (auto& e : program.uniformLocations) if (e.second == (int)(&u - program.uniforms.data ()) + 1) { nm = e.first; break; }
+				std::fprintf (stderr, " %s(off=%u,sz=%zu,comp=%u,src=%d)", nm.c_str (), u.offset, u.value.size (), (unsigned)u.components, u.isSampler ? 1 : 0);
 			}
+			std::fprintf (stderr, "\n");
+			++sUniformLog;
+		}
+		// Vertex and fragment stages each have their own MSL uniform struct at buffer(0);
+		// offsets restart when the fragment stage's uniforms begin.
+		std::vector<uint8_t> vsBytes, fsBytes;
+		uint32_t vsSize = 0, fsSize = 0;
+		uint32_t stageEnd = 0;
+		int stage = 0;
+		for (auto& u : program.uniforms)
+		{
+			if (u.isSampler || u.value.empty ()) continue;
+			const uint32_t end = u.offset + (uint32_t)u.value.size ();
+			if (stage == 0 && end <= stageEnd && u.offset <= stageEnd) { stage = 1; stageEnd = 0; }
+			auto& bytes = (stage == 0) ? vsBytes : fsBytes;
+			auto& size = (stage == 0) ? vsSize : fsSize;
+			if (end > size) { bytes.resize (end, 0); size = end; }
+			std::memcpy (bytes.data () + u.offset, u.value.data (), u.value.size ());
+			if (end > stageEnd) stageEnd = end;
 		}
 
 		const void* indexBytes = nullptr; int indexSize = 0;
@@ -155,7 +191,8 @@
 			bufferIds, strides, bufferCount,
 			attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount,
 			textureIds, textureCount,
-			uniformBytes.empty () ? nullptr : uniformBytes.data (), (int)uniformBytes.size (),
+			vsBytes.empty () ? nullptr : vsBytes.data (), (int)vsBytes.size (),
+			fsBytes.empty () ? nullptr : fsBytes.data (), (int)fsBytes.size (),
 			indexBytes, indexSize, indexType, count, 0, vertexCount, primitive);
 		return true;
 	}
@@ -261,6 +298,7 @@
 		MetalContext::state.viewport[1] = y;
 		MetalContext::state.viewport[2] = width;
 		MetalContext::state.viewport[3] = height;
+		if (cne_metal4_app_active ()) cne_metal4_app_viewport (x, y, width, height);
 	}
 
 	//@impl cne_metal_set_scissor
@@ -271,6 +309,7 @@
 		MetalContext::state.scissor[1] = y;
 		MetalContext::state.scissor[2] = width;
 		MetalContext::state.scissor[3] = height;
+		if (cne_metal4_app_active ()) cne_metal4_app_scissor (enabled, x, y, width, height);
 	}
 
 	//@impl cne_metal_set_blend

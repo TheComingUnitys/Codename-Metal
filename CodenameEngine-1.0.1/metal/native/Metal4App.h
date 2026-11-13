@@ -24,7 +24,8 @@ void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB,
 	const int* attribLoc, const int* attribBuf, const int* attribSize,
 	const int* attribType, const int* attribNorm, const int* attribOff, int attribCount,
 	const int* textureIds, int textureCount,
-	const void* uniformBytes, int uniformSize,
+	const void* vsUniformBytes, int vsUniformSize,
+	const void* fsUniformBytes, int fsUniformSize,
 	const void* indexBytes, int indexSize, int indexType, int indexCount,
 	int baseVertex, int vertexCount, int primitive);
 void cne_metal4_app_shutdown (void);
