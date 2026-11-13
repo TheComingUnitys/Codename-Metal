@@ -103,6 +103,7 @@ def main():
 \t\t\t<compilerflag value="-I%s/bx/include" />
 
 \t\t\t<file name="src/graphics/metal/MetalContext.cpp" />
+\t\t\t<file name="src/graphics/metal/Metal4Clear.mm" />
 \t\t\t<file name="src/graphics/metal/MetalBindings.cpp" />
 
 \t\t</section>

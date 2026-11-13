@@ -12,6 +12,9 @@
 // Implemented in MetalLayerHost.mm (Objective-C++): installs the
 // newLibraryWithSource / newLibraryWithData counters used by the shader-loader audit.
 extern "C" void cne_mtl_install_probe (void);
+extern "C" int cne_metal4_clear_init (void* layer);
+extern "C" int cne_metal4_clear_frame (void* layer);
+extern "C" void cne_metal4_clear_shutdown (void);
 extern "C" void cne_mtl_note_bgfx_init_boundary (void);
 extern "C" int cne_mtl_bgfx_internal_source_compiles (void);
 extern "C" void lime_install_menu_tracking_pump (void);
@@ -188,6 +191,10 @@ namespace metal {
 	bool MetalContext::created = false;
 	void* MetalContext::metalView = nullptr;
 	void* MetalContext::layer = nullptr;
+
+	// CNE_METAL4_CLEAR=1: present the frame from a native MTL4 queue instead of bgfx.
+	// Rendering is still bgfx-encoded for now; this is the presentation hand-off step.
+	static bool gMetal4ClearMode = false;
 	void* MetalContext::nativeDevice = nullptr;
 	void* MetalContext::commandQueue = nullptr;
 	bgfx::TextureHandle MetalContext::backbufferTexture = BGFX_INVALID_HANDLE;
@@ -806,6 +813,16 @@ namespace metal {
 		}
 		cne_mtl_note_bgfx_init_boundary ();
 
+		if (const char* m4 = std::getenv ("CNE_METAL4_CLEAR"))
+		{
+			if (m4[0] == '1' && m4[1] == '\0')
+			{
+				gMetal4ClearMode = cne_metal4_clear_init (layer) != 0;
+				std::fprintf (stdout, "[cne-metal4] clear/present hook %s\n", gMetal4ClearMode ? "enabled" : "unavailable");
+				std::fflush (stdout);
+			}
+		}
+
 		std::fprintf (stdout, "[cne-mtl] bgfx::init done at +%.1fms (init %.1fms)\n",
 			SinceProcessStartMs (), SinceProcessStartMs () - initStartMs);
 		if (probeEnabled)
@@ -908,6 +925,11 @@ namespace metal {
 		objects.clear ();
 		attributeMaps.clear ();
 
+		if (gMetal4ClearMode)
+		{
+			cne_metal4_clear_shutdown ();
+			gMetal4ClearMode = false;
+		}
 		bgfx::shutdown ();
 		created = false;
 		layer = nullptr;
@@ -925,6 +947,13 @@ namespace metal {
 		{
 			std::fprintf (stderr, "[cne-trace] frame%u enter\n", gFrameIndex);
 			std::fflush (stderr);
+		}
+
+		if (gMetal4ClearMode)
+		{
+			cne_metal4_clear_frame (layer);
+			++gFrameIndex;
+			return;
 		}
 
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the
