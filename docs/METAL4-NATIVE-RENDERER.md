@@ -1,10 +1,10 @@
 # Native Metal 4 renderer (bgfx removal)
 
-## Progress: ~30%
+## Progress: ~35%
 
 Milestones: probe ~5%, present+clear ~15%, first textured 2D draw ~25%, multiple draws
-~30%, full 2D pipeline ~50%, targets/filters ~70%, shaders/AOT ~85%, parity + bgfx
-removal 100%.
+~30%, ortho + two textures + blend ~35%, full 2D pipeline ~50%, targets/filters ~70%,
+shaders/AOT ~85%, parity + bgfx removal 100%.
 
 ## Status
 
@@ -14,6 +14,8 @@ removal 100%.
   `CAMetalLayer`, clears to a colour and presents 30 frames through an `MTL4CommandQueue`.
 - The sprite probe renders two textured quads with two draw calls into an offscreen target and
   verifies readback (left/right red, blue background).
+- The scene probe adds an orthographic projection uniform, two textures bound through separate
+  argument tables and alpha-blend pipeline state; readback confirms positions and colours.
 - The quad probe renders a textured full-screen quad offscreen through a Metal 4 render encoder
   (Metal 3 PSO + `MTL4::ArgumentTable`, `drawPrimitives`), then reads the target back:
 

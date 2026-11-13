@@ -11,7 +11,9 @@ build() { clang++ "${COMMON[@]}" "$ROOT/metal/tools/$1" "$ROOT/metal/tools/metal
 
 build metal4_probe.mm probe
 "$OUT/probe"
-
-if [ "${1:-}" = "--present" ]; then build metal4_present.mm present; "$OUT/present"; fi
-if [ "${1:-}" = "--quad" ]; then build metal4_quad.mm quad; "$OUT/quad"; fi
-if [ "${1:-}" = "--sprite" ]; then build metal4_sprite.mm sprite; "$OUT/sprite"; fi
+case "${1:-}" in
+	--present) build metal4_present.mm present; "$OUT/present" ;;
+	--quad)    build metal4_quad.mm quad;       "$OUT/quad" ;;
+	--sprite)  build metal4_sprite.mm sprite;   "$OUT/sprite" ;;
+	--scene)   build metal4_scene.mm scene;     "$OUT/scene" ;;
+esac
