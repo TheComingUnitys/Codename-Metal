@@ -27,7 +27,7 @@
 	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels);
 	extern "C" void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
 	extern "C" int cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib, const void* fsData, int fsSize, int fsIsMetallib, const int* attribLocations, int attribCount);
-	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const void* vsUniformBytes, int vsUniformSize, const void* fsUniformBytes, int fsUniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
+	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const int* constantLocations, const int* constantComponents, const float* constantValues, int constantCount, const void* vsUniformBytes, int vsUniformSize, const void* fsUniformBytes, int fsUniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
 
 	/** GL -> Metal blend factor (the enum values differ). */
 	static int Metal4BlendFactor (int gl)
@@ -47,6 +47,47 @@
 			case 0x0308: return 10;      // SRC_ALPHA_SATURATE
 			default: return 1;
 		}
+	}
+
+
+	struct MslAttrInfo { int slot = 0; int comps = 4; };
+	static std::map<int, std::map<std::string, MslAttrInfo>> gMslAttrCache;
+	static const std::map<std::string, MslAttrInfo>& GetMslAttrs (int program, const std::string& source)
+	{
+		auto it = gMslAttrCache.find (program);
+		if (it != gMslAttrCache.end ()) return it->second;
+		auto& out = gMslAttrCache[program];
+		size_t pos = 0;
+		while ((pos = source.find ("[[attribute(", pos)) != std::string::npos)
+		{
+			size_t lineStart = source.rfind ('\n', pos);
+			if (lineStart == std::string::npos) lineStart = 0; else ++lineStart;
+			std::string line = source.substr (lineStart, pos - lineStart);
+			size_t end = source.find (']', pos);
+			if (end == std::string::npos) break;
+			int slot = std::atoi (source.c_str () + pos + 12);
+			size_t nameEnd = line.find_last_not_of (" \t");
+			if (nameEnd != std::string::npos)
+			{
+				size_t nameStart = line.find_last_of (" \t", nameEnd);
+				std::string name = line.substr (nameStart == std::string::npos ? 0 : nameStart + 1, nameEnd - (nameStart == std::string::npos ? 0 : nameStart));
+				std::string type = line.substr (0, line.find_first_of (" \t"));
+				int comps = 4;
+				if (type == "float") comps = 1; else if (type == "float2") comps = 2; else if (type == "float3") comps = 3;
+				out[name] = MslAttrInfo { slot, comps };
+			}
+			pos = end + 1;
+		}
+		return out;
+	}
+	static std::string OpenflToMslName (const std::string& name)
+	{
+		if (name.find ("Position") != std::string::npos) return "a_position";
+		if (name.find ("TextureCoord") != std::string::npos) return "a_color0";
+		if (name.find ("Alpha") != std::string::npos || name == "alpha") return "a_color1";
+		if (name.find ("ColorMultiplier") != std::string::npos || name == "colorMultiplier") return "a_color2";
+		if (name.find ("ColorOffset") != std::string::npos || name == "colorOffset") return "a_color3";
+		return name;
 	}
 
 	/** Native ABI -> Metal 4 app renderer draw.  Returns false when unsupported. */
@@ -73,6 +114,20 @@
 			if (vsSize <= 0 || fsSize <= 0) return false;
 			int locs[64]; int n = 0;
 			for (auto& a : program.attributeLocations) { if (n < 64) locs[n++] = a.second; }
+			static int sMslAttrLog = 0;
+			if (sMslAttrLog < 4 && !vs.metallib.empty ())
+			{
+				std::string src ((const char*)vs.source.data (), vs.source.size ());
+				size_t pos = 0;
+				while ((pos = src.find ("[[attribute(", pos)) != std::string::npos)
+				{
+					size_t lineStart = src.rfind ('\n', pos);
+					std::string line = src.substr (lineStart == std::string::npos ? 0 : lineStart + 1, pos - (lineStart == std::string::npos ? 0 : lineStart + 1));
+					std::fprintf (stderr, "[cne-metal4] mslattr prog=%d: %s\n", MetalContext::state.currentProgram, line.c_str ());
+					pos += 12;
+				}
+				++sMslAttrLog;
+			}
 			if (!cne_metal4_app_program (MetalContext::state.currentProgram, vsData, vsSize, !vs.metallib.empty (),
 				fsData, fsSize, !fs.metallib.empty (), locs, n)) return false;
 			sDefinedPrograms.insert (MetalContext::state.currentProgram);
@@ -90,6 +145,23 @@
 			if (sl != attribSlots.end ()) for (auto& e : sl->second) std::fprintf (stderr, " %d->%d", (int)e.first, (int)e.second);
 			std::fprintf (stderr, "\n"); ++sSlotLog;
 		}
+		auto vsInfo = shaders.find (program.vertexShader);
+		std::map<int, MslAttrInfo> byGl;
+		if (vsInfo != shaders.end ())
+		{
+			std::string mslSrc ((const char*)vsInfo->second.source.data (), vsInfo->second.source.size ());
+			auto& mslAttrs = GetMslAttrs (MetalContext::state.currentProgram, mslSrc);
+			for (auto& al : program.attributeLocations)
+			{
+				auto found = mslAttrs.find (OpenflToMslName (al.first));
+				if (found != mslAttrs.end ())
+				{
+					auto info = found->second;
+					if (al.first.find ("Position") != std::string::npos) info.comps = 4; // OpenFL always supplies vec4 positions
+					byGl[al.second] = info;
+				}
+			}
+		}
 		int attribLoc[16], attribBuf[16], attribSize[16], attribType[16], attribNorm[16], attribOff[16];
 		int bufferIds[8], strides[8]; int bufferCount = 0, attribCount = 0;
 		for (auto& entry : vao.attribs)
@@ -100,22 +172,34 @@
 			for (int i = 0; i < bufferCount; ++i) if (bufferIds[i] == a.buffer) { bufferSlot = i; break; }
 			if (bufferSlot < 0 && bufferCount < 8) { bufferSlot = bufferCount; bufferIds[bufferCount] = a.buffer; strides[bufferCount] = a.stride; ++bufferCount; }
 			if (bufferSlot < 0) continue;
-			// The translator numbers MSL attributes sequentially in declaration order
-			// (a_position=0, a_texcoord=1, ...), which is what the shader's
-			// [[attribute(n)]] expects.  GL locations (3,4,5,...) are a different space.
-			const int mslLocation = attribCount;
+			auto mslIt = byGl.find (entry.first);
+			if (mslIt == byGl.end ()) continue;
+			const int mslLocation = mslIt->second.slot;
 			attribLoc[attribCount] = mslLocation;
-			if (attribCount < 12)
-			{
-				static int sAttribLog = 0;
-				if (sAttribLog < 24) { std::fprintf (stderr, "[cne-metal4] attrib prog=%d gl=%d msl=%d buf=%d size=%d stride=%d off=%d\n", MetalContext::state.currentProgram, entry.first, mslLocation, a.buffer, a.size, a.stride, (int)a.offset); ++sAttribLog; }
-			}
 			attribBuf[attribCount] = bufferSlot;
-			attribSize[attribCount] = a.size;
+			attribSize[attribCount] = mslIt->second.comps;
 			attribType[attribCount] = (a.type == 0x1401 /*GL_UNSIGNED_BYTE*/) ? 0 : 1;
 			attribNorm[attribCount] = a.normalized ? 1 : 0;
 			attribOff[attribCount] = (int)a.offset;
 			++attribCount;
+		}
+		bool usedMsl[32] = {false};
+		for (int i = 0; i < attribCount; ++i) if (attribLoc[i] >= 0 && attribLoc[i] < 32) usedMsl[attribLoc[i]] = true;
+		int constLoc[8], constComp[8];
+		float constVals[32];
+		int constCount = 0;
+		for (auto& ga : mtl_textures_detail::genericAttribs)
+		{
+			if (constCount >= 8) break;
+			int msl = -1; int comps = 4;
+			auto mslIt = byGl.find (ga.first);
+			if (mslIt != byGl.end ()) { msl = mslIt->second.slot; comps = mslIt->second.comps; }
+			if (msl < 0 || msl == 0 || (msl < 32 && usedMsl[msl])) continue;
+			if (msl < 32) usedMsl[msl] = true;
+			constLoc[constCount] = msl;
+			constComp[constCount] = comps;
+			for (int k = 0; k < 4; ++k) constVals[constCount * 4 + k] = ga.second.integer ? (float)ga.second.u[k] : ga.second.f[k];
+			++constCount;
 		}
 		for (int i = 0; i < bufferCount; ++i)
 		{
@@ -134,6 +218,8 @@
 				auto t = textures.find (tex);
 				if (t != textures.end () && t->second.width > 0)
 				{
+					static int sTexLog = 0;
+					if (sTexLog < 8) { std::fprintf (stderr, "[cne-metal4] tex id=%d %dx%d rt=%d pixels=%zu\n", tex, t->second.width, t->second.height, t->second.isRenderTarget ? 1 : 0, t->second.pixels.size ()); ++sTexLog; }
 					cne_metal4_app_texture (tex, t->second.width, t->second.height, t->second.isRenderTarget ? 1 : 0,
 						t->second.pixels.empty () ? nullptr : t->second.pixels.data ());
 					while (textureCount <= u.textureUnit && textureCount < 16) textureIds[textureCount++] = 0;
@@ -152,6 +238,15 @@
 			{
 				std::string nm; for (auto& e : program.uniformLocations) if (e.second == (int)(&u - program.uniforms.data ()) + 1) { nm = e.first; break; }
 				std::fprintf (stderr, " %s(off=%u,sz=%zu,comp=%u,src=%d)", nm.c_str (), u.offset, u.value.size (), (unsigned)u.components, u.isSampler ? 1 : 0);
+			}
+			for (auto& u : program.uniforms)
+			{
+				std::string nm; for (auto& e : program.uniformLocations) if (e.second == (int)(&u - program.uniforms.data ()) + 1) { nm = e.first; break; }
+				if (nm == "openfl_Matrix" && u.value.size () >= 64)
+				{
+					const float* m = (const float*)u.value.data ();
+					std::fprintf (stderr, "[cne-metal4] matrixRaw prog=%d writes=%u: %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f\n", MetalContext::state.currentProgram, u.writeCount, m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10],m[11],m[12],m[13],m[14],m[15]);
+				}
 			}
 			std::fprintf (stderr, "\n");
 			++sUniformLog;
@@ -180,9 +275,55 @@
 			const int elementBufferId = vao.elementBuffer != 0 ? vao.elementBuffer : MetalContext::state.currentElementBuffer;
 			auto b = buffers.find (elementBufferId);
 			if (b == buffers.end () || b->second.bytes.empty ()) return false;
-			indexBytes = b->second.bytes.data ();
-			indexSize = (int)b->second.bytes.size ();
+			const uint32_t elementSize = (indexType == 0) ? 2u : 4u;
+			const uint32_t offsetBytes = (uint32_t)byteOffset;
+			if (offsetBytes < b->second.bytes.size ())
+			{
+				indexBytes = b->second.bytes.data () + offsetBytes;
+				indexSize = (int)(b->second.bytes.size () - offsetBytes);
+			}
+			else
+			{
+				indexBytes = b->second.bytes.data ();
+				indexSize = (int)b->second.bytes.size ();
+			}
+			(void)elementSize;
 		}
+
+		static int sDataLog = 0;
+		if (sDataLog < 4 && (!vsBytes.empty () || !fsBytes.empty ()))
+		{
+			const std::vector<uint8_t>& mbytes = !vsBytes.empty () ? vsBytes : fsBytes;
+			const float* m = (const float*)mbytes.data ();
+			std::fprintf (stderr, "[cne-metal4] matrix prog=%d: %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f\n", MetalContext::state.currentProgram, m[0],m[1],m[2],m[3],m[12],m[13],m[14],m[15]);
+			if (!buffers.empty ()) { auto b0 = buffers.find (bufferIds[0]); if (b0 != buffers.end () && b0->second.bytes.size () >= 16) { const float* v = (const float*)b0->second.bytes.data (); std::fprintf (stderr, "[cne-metal4] vb0: %.2f %.2f %.2f | %.2f %.2f %.2f\n", v[0],v[1],v[2],v[3],v[4],v[5]); } }
+			++sDataLog;
+		}
+
+		// Fallback: some OpenFL shader-buffer draws leave openfl_Matrix at zero because the
+		// override never reaches the GLSL parameter.  If the matrix is degenerate, use an
+		// orthographic projection for the current target (positions are in pixels).
+		auto fixMatrix = [&] (std::vector<uint8_t>& bytes)
+		{
+			if (bytes.size () < 64) return;
+			float* m = (float*)bytes.data ();
+			// Degenerate scale (only translation survived the override) is as unusable as an
+			// all-zero matrix for pixel-space 2D vertices.
+			const float scaleSum = std::fabs (m[0]) + std::fabs (m[1]) + std::fabs (m[5]) + std::fabs (m[10]);
+			if (scaleSum > 0.001f) return;
+			int w = (int)MetalContext::state.backbufferWidth;
+			int h = (int)MetalContext::state.backbufferHeight;
+			if (MetalContext::state.currentFramebuffer != 0)
+			{
+				auto fb = framebuffers.find (MetalContext::state.currentFramebuffer);
+				if (fb != framebuffers.end ()) { auto tx = textures.find (fb->second.texture); if (tx != textures.end () && tx->second.width > 0) { w = tx->second.width; h = tx->second.height; } }
+			}
+			if (w <= 0) w = 1; if (h <= 0) h = 1;
+			float ortho[16] = { 2.0f / w,0,0,0, 0,-2.0f / h,0,0, 0,0,1,0, -1,1,0,1 };
+			std::memcpy (m, ortho, sizeof (ortho));
+		};
+		fixMatrix (vsBytes);
+		fixMatrix (fsBytes);
 
 		const MetalContext::State& st = MetalContext::state;
 		cne_metal4_app_draw (MetalContext::state.currentProgram, st.blendEnabled ? 1 : 0,
@@ -191,6 +332,7 @@
 			bufferIds, strides, bufferCount,
 			attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount,
 			textureIds, textureCount,
+			constLoc, constComp, constVals, constCount,
 			vsBytes.empty () ? nullptr : vsBytes.data (), (int)vsBytes.size (),
 			fsBytes.empty () ? nullptr : fsBytes.data (), (int)fsBytes.size (),
 			indexBytes, indexSize, indexType, count, 0, vertexCount, primitive);

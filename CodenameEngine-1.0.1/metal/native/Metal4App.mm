@@ -97,10 +97,11 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 	gTarget = isScreen ? -1 : textureId;
 }
 
-static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, MTLPixelFormat format)
+static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, MTLPixelFormat format, const int* constLoc, const int* constComp, int constCount)
 {
 	std::string key = std::to_string((int)[prog.vs hash]) + ":" + std::to_string((int)[prog.fs hash]) + ":";
 	key += std::to_string(blendEnabled) + "," + std::to_string(srcRGB) + "," + std::to_string(dstRGB) + "," + std::to_string(srcA) + "," + std::to_string(dstA) + ":" + std::to_string((int)format);
+	for (int i = 0; i < constCount; ++i) key += "~" + std::to_string(constLoc[i]) + "," + std::to_string(constComp[i]);
 	for (int i = 0; i < attribCount; ++i) { key += "|" + std::to_string(attribLoc[i]) + "," + std::to_string(attribBuf[i]) + "," + std::to_string(attribSize[i]) + "," + std::to_string(attribType[i]) + "," + std::to_string(attribNorm[i]) + "," + std::to_string(attribOff[i]); }
 	for (int i = 0; i < bufferCount; ++i) key += "/" + std::to_string(strides[i]);
 	auto found = gPipelines.find(key);
@@ -113,6 +114,7 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 	pd.vertexFunction = vfn;
 	pd.fragmentFunction = ffn;
 	MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+	bool usedLayout[10] = {false,false,false,false,false,false,false,false,false,false};
 	bool usedSlots[8] = {false,false,false,false,false,false,false,false};
 	for (int i = 0; i < attribCount; ++i) {
 		MTLVertexAttributeDescriptor* ad = vd.attributes[(NSUInteger)attribLoc[i]];
@@ -126,6 +128,26 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 		ad.bufferIndex = (NSUInteger)(attribBuf[i] + 1);
 		ad.offset = (NSUInteger)attribOff[i];
 		if (attribLoc[i] >= 0 && attribLoc[i] < 8) usedSlots[attribLoc[i]] = true;
+		if (attribBuf[i] + 1 < 10) usedLayout[attribBuf[i] + 1] = true;
+	}
+	// Generic constant attributes (openfl_Alpha / colour multiplier / offset) are supplied
+	// by a single constant-step buffer.
+	for (int i = 0; i < constCount && i < 8; ++i) {
+		MTLVertexAttributeDescriptor* ad = vd.attributes[(NSUInteger)constLoc[i]];
+		if (constComp[i] == 1) ad.format = MTLVertexFormatFloat;
+		else if (constComp[i] == 2) ad.format = MTLVertexFormatFloat2;
+		else if (constComp[i] == 3) ad.format = MTLVertexFormatFloat3;
+		else ad.format = MTLVertexFormatFloat4;
+		ad.bufferIndex = (NSUInteger)(bufferCount + 1);
+		ad.offset = (NSUInteger)(i * 16);
+		usedSlots[constLoc[i]] = true;
+		if (bufferCount + 1 < 10) usedLayout[bufferCount + 1] = true;
+	}
+	if (constCount > 0) {
+		MTLVertexBufferLayoutDescriptor* bl = vd.layouts[(NSUInteger)(bufferCount + 1)];
+		bl.stride = 16;
+		bl.stepFunction = MTLVertexStepFunctionConstant;
+		bl.stepRate = 0;
 	}
 	// The translator emits every shader attribute (a_tangent/a_bitangent/...) with a
 	// sequential MSL slot even when the sprite path never supplies data for it.  Metal
@@ -140,6 +162,7 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 		ad.offset = 0;
 	}
 	for (int i = 0; i < bufferCount; ++i) {
+		if (!usedLayout[i + 1]) continue;
 		MTLVertexBufferLayoutDescriptor* bl = vd.layouts[(NSUInteger)(i + 1)];
 		bl.stride = (NSUInteger)strides[i];
 		bl.stepFunction = MTLVertexStepFunctionPerVertex;
@@ -154,6 +177,16 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 		pd.colorAttachments[0].destinationAlphaBlendFactor = (MTLBlendFactor)dstA;
 	}
 	NSError* err = nil;
+	static int sDescLog = 0;
+	if (sDescLog < 6) {
+		fprintf(stderr, "[cne-metal4] vd attrs=%d buffers=%d const=%d:", attribCount, bufferCount, constCount);
+		for (int i = 0; i < attribCount; ++i) fprintf(stderr, " loc%d->buf%d", attribLoc[i], attribBuf[i] + 1);
+		for (int i = 0; i < constCount; ++i) fprintf(stderr, " cloc%d->buf%d", constLoc[i], bufferCount + 1);
+		fprintf(stderr, " | layouts");
+		for (int i = 1; i <= bufferCount; ++i) fprintf(stderr, " %d:%d", i, (int)strides[i-1]);
+		fprintf(stderr, " constbuf:%d\\n", bufferCount + 1);
+		++sDescLog;
+	}
 	id pso = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
 	if (pso == nil) { fprintf(stderr, "[cne-metal4] pipeline failed: %s\n", [[err localizedDescription] UTF8String]); return nil; }
 	gPipelines[key] = pso;
@@ -220,7 +253,7 @@ extern "C" int cne_metal4_app_program(int id,const void* vsData,int vsSize,int v
 extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int dstRGB,int srcA,int dstA,
 	const int* bufferIds,const int* strides,int bufferCount,
 	const int* attribLoc,const int* attribBuf,const int* attribSize,const int* attribType,const int* attribNorm,const int* attribOff,int attribCount,
-	const int* textureIds,int textureCount,const void* vsUniformBytes,int vsUniformSize,const void* fsUniformBytes,int fsUniformSize,
+	const int* textureIds,int textureCount,const int* constantLocations,const int* constantComponents,const float* constantValues,int constantCount,const void* vsUniformBytes,int vsUniformSize,const void* fsUniformBytes,int fsUniformSize,
 	const void* indexBytes,int indexSize,int indexType,int indexCount,int baseVertex,int vertexCount,int primitive)
 {
 	auto progIt = gPrograms.find(program);
@@ -228,7 +261,7 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	if (gEncoder == nil) return;
 	static int sDrawLog = 0;
 	if (sDrawLog < 12) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d idx=%d count=%d target=%d\\n", program, bufferCount, attribCount, textureCount, indexSize, indexCount, gTarget); ++sDrawLog; }
-	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, (gTarget == -1 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm));
+	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, (gTarget == -1 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm), constantLocations, constantComponents, constantCount);
 	if (pso == nil) return;
 	[gEncoder setRenderPipelineState:pso];
 
@@ -247,6 +280,11 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	for (int i = 0; i < bufferCount; ++i) {
 		auto bi = gBuffers.find(bufferIds[i]);
 		if (bi != gBuffers.end()) [tableVS setAddress:[bi->second gpuAddress] attributeStride:(NSUInteger)strides[i] atIndex:(NSUInteger)(i + 1)];
+	}
+	if (constantCount > 0) {
+		id cb = [gDevice newBufferWithBytes:constantValues length:(NSUInteger)(constantCount * 16) options:MTLResourceStorageModeShared];
+		gTransient.push_back(cb);
+		[tableVS setAddress:[cb gpuAddress] attributeStride:16 atIndex:(NSUInteger)(bufferCount + 1)];
 	}
 	if (gSampler != nil) [tableFS setSamplerState:[gSampler gpuResourceID] atIndex:0];
 	for (int i = 0; i < textureCount && i < 16; ++i) {
