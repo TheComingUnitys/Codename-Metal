@@ -71,7 +71,11 @@
 			{
 				size_t nameStart = line.find_last_of (" \t", nameEnd);
 				std::string name = line.substr (nameStart == std::string::npos ? 0 : nameStart + 1, nameEnd - (nameStart == std::string::npos ? 0 : nameStart));
-				std::string type = line.substr (0, line.find_first_of (" \t"));
+				size_t typeStart = line.find_first_not_of (" \t");
+				size_t typeEnd = (typeStart == std::string::npos) ? std::string::npos : line.find_first_of (" \t", typeStart);
+				std::string type = (typeStart == std::string::npos)
+					? std::string ()
+					: line.substr (typeStart, typeEnd == std::string::npos ? std::string::npos : typeEnd - typeStart);
 				int comps = 4;
 				if (type == "float") comps = 1; else if (type == "float2") comps = 2; else if (type == "float3") comps = 3;
 				out[name] = MslAttrInfo { slot, comps };
@@ -151,16 +155,78 @@
 		{
 			std::string mslSrc ((const char*)vsInfo->second.source.data (), vsInfo->second.source.size ());
 			auto& mslAttrs = GetMslAttrs (MetalContext::state.currentProgram, mslSrc);
+			std::map<int, int> slotComps;
+			for (auto& ma : mslAttrs) slotComps[ma.second.slot] = ma.second.comps;
+
+			// `attribSlots` is the GLSL->MSL mapping produced by the translator at link
+			// time (glLocation -> MSL [[attribute(n)]]).  The OpenFL attribute *name* is
+			// NOT a stable slot: the 5-attribute display shaders put openfl_Position on
+			// a_bitangent (slot 3), while the 2-attribute bitmap shaders put it on
+			// a_position (slot 0).  The old name heuristic fed vertex positions into the
+			// alpha attribute and left position reading a dummy float4 for every 5/8
+			// attribute shader: every triangle collapsed to one point (black screen).
+			auto slotsIt = attribSlots.find (MetalContext::state.currentProgram);
 			for (auto& al : program.attributeLocations)
 			{
-				auto found = mslAttrs.find (OpenflToMslName (al.first));
-				if (found != mslAttrs.end ())
+				int slot = -1;
+				if (slotsIt != attribSlots.end ())
 				{
-					auto info = found->second;
-					if (al.first.find ("Position") != std::string::npos) info.comps = 2; // overridden by the VAO size below when available
-					byGl[al.second] = info;
+					auto found = slotsIt->second.find ((uint8_t)al.second);
+					if (found != slotsIt->second.end ()) slot = (int)found->second;
 				}
+				if (slot < 0)
+				{
+					auto found = mslAttrs.find (OpenflToMslName (al.first));
+					if (found != mslAttrs.end ()) slot = found->second.slot;
+				}
+				if (slot < 0) continue;
+				MslAttrInfo info;
+				info.slot = slot;
+				auto compsIt = slotComps.find (slot);
+				info.comps = (compsIt != slotComps.end ()) ? compsIt->second : 4;
+				byGl[al.second] = info;
 			}
+		}
+		// OpenFL's alpha/colour attributes are normally constant vertex attributes.
+		// Resolve their MSL slots before walking the VAO so the real vertex streams do
+		// not claim a slot that the constant block owns.
+		// Both naming conventions can be present at once: OpenFL's built-ins
+		// (`openfl_Alpha` ...) and Flixel's (`alpha`, `colorMultiplier`, `colorOffset`).
+		// They live in different MSL slots, so collect every one instead of keeping the
+		// last name seen (the old scalar slots dropped openfl_Alpha for 8-attribute
+		// shaders and left its attribute reading dummy data).
+		std::vector<int> alphaSlots, multSlots, offsetSlots;
+		auto pushUnique = [] (std::vector<int>& v, int slot) {
+			if (slot < 0) return;
+			for (int existing : v) if (existing == slot) return;
+			v.push_back (slot);
+		};
+		for (auto& al : program.attributeLocations)
+		{
+			auto mslIt = byGl.find (al.second);
+			if (mslIt == byGl.end ()) continue;
+			if (al.first.find ("Alpha") != std::string::npos || al.first == "alpha") pushUnique (alphaSlots, mslIt->second.slot);
+			else if (al.first.find ("ColorMultiplier") != std::string::npos || al.first == "colorMultiplier") pushUnique (multSlots, mslIt->second.slot);
+			else if (al.first.find ("ColorOffset") != std::string::npos || al.first == "colorOffset") pushUnique (offsetSlots, mslIt->second.slot);
+		}
+		auto isConstantSlot = [&] (int slot) {
+			if (slot < 0) return false;
+			for (int s : alphaSlots) if (s == slot) return true;
+			for (int s : multSlots) if (s == slot) return true;
+			for (int s : offsetSlots) if (s == slot) return true;
+			return false;
+		};
+		static int sMapLog = 0;
+		if (sMapLog < 8)
+		{
+			std::fprintf (stderr, "[cne-metal4] attrmap prog=%d:", MetalContext::state.currentProgram);
+			for (auto& e : byGl) std::fprintf (stderr, " gl%d->msl%d(%dc)", e.first, e.second.slot, e.second.comps);
+			std::fprintf (stderr, " | const");
+			for (int s : alphaSlots) std::fprintf (stderr, " a%d", s);
+			for (int s : multSlots) std::fprintf (stderr, " m%d", s);
+			for (int s : offsetSlots) std::fprintf (stderr, " o%d", s);
+			std::fprintf (stderr, "\n");
+			++sMapLog;
 		}
 		int attribLoc[16], attribBuf[16], attribSize[16], attribType[16], attribNorm[16], attribOff[16];
 		int bufferIds[8], strides[8]; int bufferCount = 0, attribCount = 0;
@@ -168,13 +234,13 @@
 		{
 			VertexAttrib& a = entry.second;
 			if (!a.enabled || attribCount >= 16) continue;
+			auto mslIt = byGl.find (entry.first);
+			if (mslIt == byGl.end ()) continue;
+			if (isConstantSlot (mslIt->second.slot)) continue;
 			int bufferSlot = -1;
 			for (int i = 0; i < bufferCount; ++i) if (bufferIds[i] == a.buffer) { bufferSlot = i; break; }
 			if (bufferSlot < 0 && bufferCount < 8) { bufferSlot = bufferCount; bufferIds[bufferCount] = a.buffer; strides[bufferCount] = a.stride; ++bufferCount; }
 			if (bufferSlot < 0) continue;
-			auto mslIt = byGl.find (entry.first);
-			if (mslIt == byGl.end ()) continue;
-			if (mslIt->second.slot == 5 || mslIt->second.slot == 6 || mslIt->second.slot == 7) continue; // constant alpha/colors below
 			const int mslLocation = mslIt->second.slot;
 			attribLoc[attribCount] = mslLocation;
 			attribBuf[attribCount] = bufferSlot;
@@ -189,34 +255,22 @@
 		int constLoc[8], constComp[8];
 		float constVals[32];
 		int constCount = 0;
-		// OpenFL's alpha/colour attributes are normally constant vertex attributes; when the
-		// native path has no reliable constant value, force the neutral values so sprites are
-		// not multiplied by zero alpha.
-		int alphaSlot = -1, multSlot = -1, offsetSlot = -1;
-		for (auto& al : program.attributeLocations)
-		{
-			auto mslIt = byGl.find (al.second);
-			if (mslIt == byGl.end ()) continue;
-			if (al.first.find ("Alpha") != std::string::npos || al.first == "alpha") alphaSlot = mslIt->second.slot;
-			else if (al.first.find ("ColorMultiplier") != std::string::npos || al.first == "colorMultiplier") multSlot = mslIt->second.slot;
-			else if (al.first.find ("ColorOffset") != std::string::npos || al.first == "colorOffset") offsetSlot = mslIt->second.slot;
-		}
 		auto addConst = [&] (int slot, int comps, float a, float b, float c, float d) {
 			if (slot < 0 || constCount >= 8) return;
 			constLoc[constCount] = slot; constComp[constCount] = comps;
 			constVals[constCount*4+0]=a; constVals[constCount*4+1]=b; constVals[constCount*4+2]=c; constVals[constCount*4+3]=d;
 			usedMsl[slot] = true; ++constCount;
 		};
-		addConst (alphaSlot, 1, 1.f, 0.f, 0.f, 1.f);
-		addConst (multSlot, 4, 1.f, 1.f, 1.f, 1.f);
-		addConst (offsetSlot, 4, 0.f, 0.f, 0.f, 0.f);
+		for (int slot : alphaSlots) addConst (slot, 1, 1.f, 0.f, 0.f, 1.f);
+		for (int slot : multSlots) addConst (slot, 4, 1.f, 1.f, 1.f, 1.f);
+		for (int slot : offsetSlots) addConst (slot, 4, 0.f, 0.f, 0.f, 0.f);
 		for (auto& ga : mtl_textures_detail::genericAttribs)
 		{
 			if (constCount >= 8) break;
 			int msl = -1; int comps = 4;
 			auto mslIt = byGl.find (ga.first);
 			if (mslIt != byGl.end ()) { msl = mslIt->second.slot; comps = mslIt->second.comps; }
-			if (msl < 0 || msl == 0 || (msl < 32 && usedMsl[msl])) continue;
+			if (msl < 0 || (msl < 32 && usedMsl[msl])) continue;
 			if (msl < 32) usedMsl[msl] = true;
 			constLoc[constCount] = msl;
 			constComp[constCount] = comps;
@@ -273,22 +327,26 @@
 			std::fprintf (stderr, "\n");
 			++sUniformLog;
 		}
-		// Vertex and fragment stages each have their own MSL uniform struct at buffer(0);
-		// offsets restart when the fragment stage's uniforms begin.
+		// Vertex and fragment stages each have their own MSL uniform struct at buffer(0).
+		// The translator reports the stage and the per-stage MSL offset for every uniform
+		// (a name declared in both stages appears twice; `lime_metal_configure_program`
+		// records both offsets on one entry).  Guessing the boundary from decreasing
+		// offsets corrupted shaders whose fragment block happened to start at a higher
+		// offset than the vertex block ended.
 		std::vector<uint8_t> vsBytes, fsBytes;
 		uint32_t vsSize = 0, fsSize = 0;
-		uint32_t stageEnd = 0;
-		int stage = 0;
+		auto stageCopy = [] (std::vector<uint8_t>& bytes, uint32_t& size, uint32_t offset, const std::vector<uint8_t>& value)
+		{
+			const uint32_t end = offset + (uint32_t)value.size ();
+			if (end > size) { bytes.resize (end, 0); size = end; }
+			std::memcpy (bytes.data () + offset, value.data (), value.size ());
+		};
 		for (auto& u : program.uniforms)
 		{
 			if (u.isSampler || u.value.empty ()) continue;
-			const uint32_t end = u.offset + (uint32_t)u.value.size ();
-			if (stage == 0 && end <= stageEnd && u.offset <= stageEnd) { stage = 1; stageEnd = 0; }
-			auto& bytes = (stage == 0) ? vsBytes : fsBytes;
-			auto& size = (stage == 0) ? vsSize : fsSize;
-			if (end > size) { bytes.resize (end, 0); size = end; }
-			std::memcpy (bytes.data () + u.offset, u.value.data (), u.value.size ());
-			if (end > stageEnd) stageEnd = end;
+			if (u.hasVs) stageCopy (vsBytes, vsSize, u.vsOffset, u.value);
+			if (u.hasFs) stageCopy (fsBytes, fsSize, u.fsOffset, u.value);
+			if (!u.hasVs && !u.hasFs) stageCopy (vsBytes, vsSize, u.offset, u.value);
 		}
 
 		const void* indexBytes = nullptr; int indexSize = 0;
@@ -340,14 +398,39 @@
 		}
 
 		// Fallback: some OpenFL shader-buffer draws leave openfl_Matrix at zero because the
-		// override never reaches the GLSL parameter.  If the matrix is degenerate, use an
-		// orthographic projection for the current target (positions are in pixels).
+		// override never reaches the GLSL parameter.  If the matrix is degenerate, rebuild
+		// the ortho projection.  The vertex space is not always pixels: OpenFL's screen
+		// quad uses 0..1 coordinates, so look at the first position value before choosing
+		// between a [-1,1] -> NDC transform and a pixel-space projection.
+		int positionSlot = -1;
+		for (auto& al : program.attributeLocations)
+		{
+			if (al.first.find ("Position") == std::string::npos) continue;
+			auto slotIt = byGl.find (al.second);
+			if (slotIt != byGl.end ()) { positionSlot = slotIt->second.slot; break; }
+		}
+		bool normalizedPositions = false;
+		for (int i = 0; i < attribCount; ++i)
+		{
+			if (attribLoc[i] != positionSlot) continue;
+			const int slot = attribBuf[i];
+			if (slot >= 0 && slot < bufferCount)
+			{
+				auto b = buffers.find (bufferIds[slot]);
+				if (b != buffers.end () && b->second.bytes.size () >= (size_t)attribOff[i] + sizeof (float) * 2)
+				{
+					const float* p = reinterpret_cast<const float*> (b->second.bytes.data () + attribOff[i]);
+					normalizedPositions = std::fabs (p[0]) <= 2.0f && std::fabs (p[1]) <= 2.0f;
+				}
+			}
+			break;
+		}
 		auto fixMatrix = [&] (std::vector<uint8_t>& bytes)
 		{
 			if (bytes.size () < 64) return;
 			float* m = (float*)bytes.data ();
 			// Degenerate scale (only translation survived the override) is as unusable as an
-			// all-zero matrix for pixel-space 2D vertices.
+			// all-zero matrix for 2D vertices.
 			const float scaleSum = std::fabs (m[0]) + std::fabs (m[1]) + std::fabs (m[5]) + std::fabs (m[10]);
 			if (scaleSum > 0.001f) return;
 			int w = (int)MetalContext::state.backbufferWidth;
@@ -358,11 +441,12 @@
 				if (fb != framebuffers.end ()) { auto tx = textures.find (fb->second.texture); if (tx != textures.end () && tx->second.width > 0) { w = tx->second.width; h = tx->second.height; } }
 			}
 			if (w <= 0) w = 1; if (h <= 0) h = 1;
-			float ortho[16] = { 2.0f / w,0,0,0, 0,-2.0f / h,0,0, 0,0,1,0, -1,1,0,1 };
+			const float sx = normalizedPositions ? 2.0f : 2.0f / w;
+			const float sy = normalizedPositions ? -2.0f : -2.0f / h;
+			float ortho[16] = { sx,0,0,0, 0,sy,0,0, 0,0,1,0, -1,1,0,1 };
 			std::memcpy (m, ortho, sizeof (ortho));
 		};
 		fixMatrix (vsBytes);
-		fixMatrix (fsBytes);
 
 		const MetalContext::State& st = MetalContext::state;
 		cne_metal4_app_draw (MetalContext::state.currentProgram, st.blendEnabled ? 1 : 0,

@@ -6,6 +6,8 @@ extern "C" {
 #endif
 
 int  cne_metal4_app_init (void* caMetalLayer, int width, int height);
+/** Headless/offscreen variant used by metal/autotests: no CAMetalLayer/drawable. */
+int  cne_metal4_app_init_offscreen (int width, int height);
 int  cne_metal4_app_active (void);
 void cne_metal4_app_frame_begin (void);
 void cne_metal4_app_frame_end (void);
@@ -29,6 +31,8 @@ void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB,
 	const void* fsUniformBytes, int fsUniformSize,
 	const void* indexBytes, int indexSize, int indexType, int indexCount,
 	int baseVertex, int vertexCount, int primitive);
+/** Test hook: after a frame is submitted, copy an RGBA8 texture into `out` (w*h*4). */
+int  cne_metal4_app_read_texture (int textureId, void* out, int width, int height);
 void cne_metal4_app_shutdown (void);
 
 #ifdef __cplusplus

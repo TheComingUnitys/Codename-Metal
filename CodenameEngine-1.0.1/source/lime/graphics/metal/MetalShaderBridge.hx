@@ -268,6 +268,9 @@ class MetalShaderBridge
 		{
 			if (!shaderResults.exists(shader)) continue;
 			var result = shaderResults.get(shader);
+			// [cne-metal4] each stage has its own MSL uniform struct at buffer(0); the
+			// native path needs the stage to know which block an offset belongs to.
+			var stage = (shaderIsVertex.exists(shader) && shaderIsVertex.get(shader)) ? 0 : 1;
 
 			for (uniform in result.uniforms)
 			{
@@ -278,6 +281,7 @@ class MetalShaderBridge
 				uniformMap.push(componentsOf(uniform.glslType));
 				uniformMap.push(false);
 				uniformMap.push(0);
+				uniformMap.push(stage);
 			}
 
 			for (sampler in result.samplers)
@@ -289,11 +293,12 @@ class MetalShaderBridge
 				uniformMap.push(4);
 				uniformMap.push(true);
 				uniformMap.push(sampler.index);
+				uniformMap.push(stage);
 			}
 		}
 
 		progLog("configure program=" + program + " attributes=" + (attributeMap.length / 2)
-			+ " uniforms=" + (uniformMap.length / 7));
+			+ " uniforms=" + (uniformMap.length / 8));
 
 		NativeCFFI.lime_metal_configure_program(program, attributeMap, uniformMap);
 	}

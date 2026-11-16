@@ -501,6 +501,14 @@ namespace lime {
 			{
 				bgfx::UniformHandle handle = BGFX_INVALID_HANDLE;
 				uint32_t offset = 0;
+				// [cne-metal4] MSL uniform structs restart at buffer(0) in each stage, and
+				// the translator reports one (stage, offset) pair per declaration.  A name
+				// declared in both stages gets both offsets here; one shared CPU value is
+				// uploaded to both stage blocks.
+				bool hasVs = false;
+				bool hasFs = false;
+				uint32_t vsOffset = 0;
+				uint32_t fsOffset = 0;
 				uint32_t memberCount = 1;
 				uint8_t components = 4;
 				bool isSampler = false;
@@ -3667,13 +3675,13 @@ namespace lime {
 			}
 		}
 
-		// uniformMap: flat [name, bgfxUniformName, offset, memberCount, components, isSampler, textureUnit]
+		// uniformMap: flat [name, bgfxUniformName, offset, memberCount, components, isSampler, textureUnit, stage]
 		data.uniforms.clear ();
 		data.uniformLocations.clear ();
 
 		if (val_is_array (uniformMap))
 		{
-			int stride = 7;
+			int stride = 8;
 			int count = val_array_size (uniformMap) / stride;
 
 			for (int i = 0; i < count; ++i)
@@ -3681,18 +3689,33 @@ namespace lime {
 				int base = i * stride;
 				std::string name (val_string (val_array_i (uniformMap, base)));
 				std::string bgfxName (val_string (val_array_i (uniformMap, base + 1)));
+				const uint32_t offset = (uint32_t)val_int (val_array_i (uniformMap, base + 2));
+				const int stage = val_int (val_array_i (uniformMap, base + 7));
 
 				// The Haxe shim walks the vertex *and* the fragment stage, so a uniform
 				// declared in both (`openfl_HasColorTransform`, `openfl_TextureSize`,
-				// Flixel's `hasColorTransform`, ...) arrives twice.  Keeping both entries
-				// meant `glGetUniformLocation` only ever reached the later one while
-				// `ApplyUniformsBeforeDraw` uploaded both - and the duplicated handle (bgfx
-				// dedupes uniforms by name) made the two stages' values depend on upload
-				// order.  One location per name, per program.
-				if (data.uniformLocations.find (name) != data.uniformLocations.end ()) continue;
+				// Flixel's `hasColorTransform`, ...) arrives twice.  Keep one GL location
+				// per name, but record both stage offsets so the native draw uploads the
+				// value into each stage's MSL uniform struct.
+				auto existing = data.uniformLocations.find (name);
+				if (existing != data.uniformLocations.end ())
+				{
+					const int index = existing->second;
+					if (index > 0 && (size_t)index <= data.uniforms.size ())
+					{
+						ProgramData::Uniform& u = data.uniforms[index - 1];
+						if (stage == 0) { if (!u.hasVs) { u.hasVs = true; u.vsOffset = offset; } }
+						else            { if (!u.hasFs) { u.hasFs = true; u.fsOffset = offset; } }
+					}
+					continue;
+				}
 
 				ProgramData::Uniform uniform;
-				uniform.offset = (uint32_t)val_int (val_array_i (uniformMap, base + 2));
+				uniform.offset = offset;
+				uniform.hasVs = (stage == 0);
+				uniform.vsOffset = (stage == 0) ? offset : 0;
+				uniform.hasFs = (stage != 0);
+				uniform.fsOffset = (stage != 0) ? offset : 0;
 				uniform.memberCount = (uint32_t)val_int (val_array_i (uniformMap, base + 3));
 				uniform.components = (uint8_t)val_int (val_array_i (uniformMap, base + 4));
 				uniform.isSampler = val_bool (val_array_i (uniformMap, base + 5));
