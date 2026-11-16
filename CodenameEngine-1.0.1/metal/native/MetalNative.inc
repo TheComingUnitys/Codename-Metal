@@ -157,7 +157,7 @@
 				if (found != mslAttrs.end ())
 				{
 					auto info = found->second;
-					if (al.first.find ("Position") != std::string::npos) info.comps = 3; // OpenFL VAO position is vec3 (stride 56)
+					if (al.first.find ("Position") != std::string::npos) info.comps = 2; // overridden by the VAO size below when available
 					byGl[al.second] = info;
 				}
 			}
@@ -174,10 +174,11 @@
 			if (bufferSlot < 0) continue;
 			auto mslIt = byGl.find (entry.first);
 			if (mslIt == byGl.end ()) continue;
+			if (mslIt->second.slot == 5 || mslIt->second.slot == 6 || mslIt->second.slot == 7) continue; // constant alpha/colors below
 			const int mslLocation = mslIt->second.slot;
 			attribLoc[attribCount] = mslLocation;
 			attribBuf[attribCount] = bufferSlot;
-			attribSize[attribCount] = mslIt->second.comps;
+			attribSize[attribCount] = a.size; // match the actual VAO layout (vec2/vec3)
 			attribType[attribCount] = (a.type == 0x1401 /*GL_UNSIGNED_BYTE*/) ? 0 : 1;
 			attribNorm[attribCount] = a.normalized ? 1 : 0;
 			attribOff[attribCount] = (int)a.offset;
@@ -188,6 +189,27 @@
 		int constLoc[8], constComp[8];
 		float constVals[32];
 		int constCount = 0;
+		// OpenFL's alpha/colour attributes are normally constant vertex attributes; when the
+		// native path has no reliable constant value, force the neutral values so sprites are
+		// not multiplied by zero alpha.
+		int alphaSlot = -1, multSlot = -1, offsetSlot = -1;
+		for (auto& al : program.attributeLocations)
+		{
+			auto mslIt = byGl.find (al.second);
+			if (mslIt == byGl.end ()) continue;
+			if (al.first.find ("Alpha") != std::string::npos || al.first == "alpha") alphaSlot = mslIt->second.slot;
+			else if (al.first.find ("ColorMultiplier") != std::string::npos || al.first == "colorMultiplier") multSlot = mslIt->second.slot;
+			else if (al.first.find ("ColorOffset") != std::string::npos || al.first == "colorOffset") offsetSlot = mslIt->second.slot;
+		}
+		auto addConst = [&] (int slot, int comps, float a, float b, float c, float d) {
+			if (slot < 0 || constCount >= 8) return;
+			constLoc[constCount] = slot; constComp[constCount] = comps;
+			constVals[constCount*4+0]=a; constVals[constCount*4+1]=b; constVals[constCount*4+2]=c; constVals[constCount*4+3]=d;
+			usedMsl[slot] = true; ++constCount;
+		};
+		addConst (alphaSlot, 1, 1.f, 0.f, 0.f, 1.f);
+		addConst (multSlot, 4, 1.f, 1.f, 1.f, 1.f);
+		addConst (offsetSlot, 4, 0.f, 0.f, 0.f, 0.f);
 		for (auto& ga : mtl_textures_detail::genericAttribs)
 		{
 			if (constCount >= 8) break;
@@ -281,6 +303,23 @@
 			{
 				indexBytes = b->second.bytes.data () + offsetBytes;
 				indexSize = (int)(b->second.bytes.size () - offsetBytes);
+				static int sIdxLog = 0;
+				if (sIdxLog < 4 && indexSize >= 12)
+				{
+					const uint16_t* idx = (const uint16_t*)indexBytes;
+					std::fprintf (stderr, "[cne-metal4] idx prog=%d count=%d first=%u,%u,%u,%u,%u,%u stride0=%d vb0size=%zu\n", MetalContext::state.currentProgram, count, idx[0],idx[1],idx[2],idx[3],idx[4],idx[5], strides[0], buffers[bufferIds[0]].bytes.size ());
+					for (int q = 0; q < 3; ++q)
+					{
+						const uint32_t vi = idx[q];
+						auto bv = buffers.find (bufferIds[0]);
+						if (bv != buffers.end () && (size_t)(vi * strides[0] + 12) <= bv->second.bytes.size ())
+						{
+							const float* vp = (const float*)(bv->second.bytes.data () + (size_t)vi * strides[0]);
+							std::fprintf (stderr, "[cne-metal4]   v%u = %.2f %.2f %.2f\n", vi, vp[0], vp[1], vp[2]);
+						}
+					}
+					++sIdxLog;
+				}
 			}
 			else
 			{
@@ -451,7 +490,8 @@
 		MetalContext::state.scissor[1] = y;
 		MetalContext::state.scissor[2] = width;
 		MetalContext::state.scissor[3] = height;
-		if (cne_metal4_app_active ()) cne_metal4_app_scissor (enabled, x, y, width, height);
+		static const bool noScissor = std::getenv ("CNE_METAL4_NO_SCISSOR") != nullptr;
+		if (!noScissor && cne_metal4_app_active ()) cne_metal4_app_scissor (enabled, x, y, width, height);
 	}
 
 	//@impl cne_metal_set_blend

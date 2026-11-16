@@ -33,7 +33,39 @@ static bool gScissor = false; static int gScissorRect[4] = {0,0,0,0};
 static bool gBegun = false;
 static std::vector<id> gTransient;
 static bool gDebugDraw = false;
+static bool gDebugFbo = false;
+static id gDebugFboPipeline = nil;
+static bool gDebugEngine = false;
+static id gDebugEngineLib = nil;
+static id<MTL4ArgumentTable> gDebugFboArg = nil;
 static id gDebugPipeline = nil;
+static void DrawDebugFbo()
+{
+	if (!gDebugFbo || !gEncoder || gTarget != -1) return;
+	auto it = gTextures.find(0);
+	static int sFboLog = 0;
+	if (sFboLog < 5) { fprintf(stderr, "[cne-metal4] debugfbo target=%d tex0=%s pipe=%p arg=%p\n", gTarget, it != gTextures.end() ? "yes" : "no", (__bridge void*)gDebugFboPipeline, (__bridge void*)gDebugFboArg); ++sFboLog; }
+	if (it == gTextures.end() || it->second == nil) return;
+	if (gDebugFboPipeline == nil) {
+		NSString* src = @"#include <metal_stdlib>\nusing namespace metal;\nstruct VOut { float4 pos [[position]]; float2 uv; };\nvertex VOut vmain(uint vid [[vertex_id]]) { float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) }; VOut o; o.pos=float4(p[vid],0,1); o.uv=float2((p[vid].x+1)*0.5,(1-p[vid].y)*0.5); return o; }\nfragment float4 fmain(VOut in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { return t.sample(s, in.uv); }\n";
+		NSError* err = nil;
+		id<MTLLibrary> lib = [gDevice newLibraryWithSource:src options:nil error:&err];
+		MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
+		pd.vertexFunction = [lib newFunctionWithName:@"vmain"];
+		pd.fragmentFunction = [lib newFunctionWithName:@"fmain"];
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		gDebugFboPipeline = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
+		MTL4ArgumentTableDescriptor* atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 0; atd.maxTextureBindCount = 1; atd.maxSamplerStateBindCount = 1; atd.initializeBindings = YES;
+		gDebugFboArg = [gDevice newArgumentTableWithDescriptor:atd error:nil];
+	}
+	if (gDebugFboPipeline == nil || gDebugFboArg == nil) return;
+	[gDebugFboArg setTexture:(MTLResourceID)[it->second gpuResourceID] atIndex:0];
+	[gDebugFboArg setSamplerState:[gSampler gpuResourceID] atIndex:0];
+	[gEncoder setRenderPipelineState:gDebugFboPipeline];
+	[gEncoder setArgumentTable:gDebugFboArg atStages:MTLRenderStageFragment];
+	[gEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:1];
+}
 static void DrawDebugTriangle()
 {
 	if (!gDebugDraw || !gEncoder || gTarget != -1) return;
@@ -94,6 +126,8 @@ static void EndEncoder()
 static int sFrameNo = 0;
 static void BeginTarget(int textureId, int w, int h, int isScreen, float r, float g, float b, float a, int clearColor)
 {
+	static const bool fboDebugClear = getenv("CNE_METAL4_DEBUG_FBO_CLEAR") != nullptr;
+	if (!isScreen && fboDebugClear) { r = 1.0f; g = 0.0f; b = 1.0f; a = 1.0f; clearColor = 1; }
 	static int sTargetLog = 0;
 	if (sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d\\n", sFrameNo, isScreen, textureId, w, h, clearColor); ++sTargetLog; }
 	EndEncoder();
@@ -121,7 +155,7 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 
 static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, MTLPixelFormat format, const int* constLoc, const int* constComp, int constCount)
 {
-	std::string key = std::to_string((int)[prog.vs hash]) + ":" + std::to_string((int)[prog.fs hash]) + ":";
+	std::string key = (gDebugEngine ? "dbg:" : "") + std::to_string((int)[prog.vs hash]) + ":" + std::to_string((int)[prog.fs hash]) + ":";
 	key += std::to_string(blendEnabled) + "," + std::to_string(srcRGB) + "," + std::to_string(dstRGB) + "," + std::to_string(srcA) + "," + std::to_string(dstA) + ":" + std::to_string((int)format);
 	for (int i = 0; i < constCount; ++i) key += "~" + std::to_string(constLoc[i]) + "," + std::to_string(constComp[i]);
 	for (int i = 0; i < attribCount; ++i) { key += "|" + std::to_string(attribLoc[i]) + "," + std::to_string(attribBuf[i]) + "," + std::to_string(attribSize[i]) + "," + std::to_string(attribType[i]) + "," + std::to_string(attribNorm[i]) + "," + std::to_string(attribOff[i]); }
@@ -130,8 +164,18 @@ static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribB
 	if (found != gPipelines.end()) return found->second;
 
 	MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
-	id vfn = [prog.vs newFunctionWithName:@"xlatMtlMain"];
-	id ffn = [prog.fs newFunctionWithName:@"xlatMtlMain"];
+	id vfn = nil; id ffn = nil;
+	if (gDebugEngine) {
+		if (gDebugEngineLib == nil) {
+			NSString* src = @"#include <metal_stdlib>\nusing namespace metal;\nstruct VIn { float3 pos [[attribute(0)]]; float2 uv [[attribute(4)]]; };\nstruct VOut { float4 pos [[position]]; float2 uv; };\nvertex VOut vmain(VIn in [[stage_in]]) { VOut o; o.pos = float4(in.pos, 1.0); o.uv = in.uv; return o; }\nfragment float4 fmain(VOut in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { return t.sample(s, in.uv); }\n";
+			gDebugEngineLib = [gDevice newLibraryWithSource:src options:nil error:nil];
+		}
+		vfn = [gDebugEngineLib newFunctionWithName:@"vmain"];
+		ffn = [gDebugEngineLib newFunctionWithName:@"fmain"];
+	} else {
+		vfn = [prog.vs newFunctionWithName:@"xlatMtlMain"];
+		ffn = [prog.fs newFunctionWithName:@"xlatMtlMain"];
+	}
 	if (vfn == nil || ffn == nil) { fprintf(stderr, "[cne-metal4] xlatMtlMain missing\n"); return nil; }
 	pd.vertexFunction = vfn;
 	pd.fragmentFunction = ffn;
@@ -232,6 +276,8 @@ extern "C" int cne_metal4_app_init(void* layerPtr, int width, int height)
 	gCommandBuffer = [gDevice newCommandBuffer];
 	gWidth = width; gHeight = height;
 	gDebugDraw = getenv("CNE_METAL4_DEBUG_DRAW") != nullptr;
+	gDebugFbo = getenv("CNE_METAL4_DEBUG_FBO") != nullptr;
+	gDebugEngine = getenv("CNE_METAL4_DEBUG_ENGINE") != nullptr;
 	gViewport[0]=0; gViewport[1]=0; gViewport[2]=width; gViewport[3]=height;
 	return (gQueue && gAllocator && gCommandBuffer) ? 1 : 0;
 }
@@ -253,6 +299,7 @@ extern "C" void cne_metal4_app_frame_end(void)
 	++sFrameNo;
 	fprintf(stderr, "[cne-metal4] frame_end f=%d target=%d drawable=%p\\n", sFrameNo, gTarget, (__bridge void*)gDrawable);
 	if (gTarget == -2) BeginTarget(-1, gWidth, gHeight, 1, 0,0,0,1, 1);
+	DrawDebugFbo();
 	DrawDebugTriangle();
 	EndEncoder();
 	[gCommandBuffer endCommandBuffer];
