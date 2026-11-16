@@ -32,6 +32,28 @@ static int gViewport[4] = {0,0,0,0};
 static bool gScissor = false; static int gScissorRect[4] = {0,0,0,0};
 static bool gBegun = false;
 static std::vector<id> gTransient;
+static bool gDebugDraw = false;
+static id gDebugPipeline = nil;
+static void DrawDebugTriangle()
+{
+	if (!gDebugDraw || !gEncoder || gTarget != -1) return;
+	if (gDebugPipeline == nil) {
+		NSString* src = @"#include <metal_stdlib>\nusing namespace metal;\nvertex float4 vmain(uint vid [[vertex_id]]) { float2 p[3] = { float2(-0.8,-0.8), float2(0.8,-0.8), float2(0.0,0.8) }; return float4(p[vid],0,1); }\nfragment float4 fmain() { return float4(1.0,0.2,0.0,1.0); }\n";
+		NSError* err = nil;
+		id<MTLLibrary> lib = [gDevice newLibraryWithSource:src options:nil error:&err];
+		id<MTLFunction> vf = [lib newFunctionWithName:@"vmain"];
+		id<MTLFunction> ff = [lib newFunctionWithName:@"fmain"];
+		MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
+		pd.vertexFunction = vf; pd.fragmentFunction = ff;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		gDebugPipeline = [gDevice newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (gDebugPipeline == nil) fprintf(stderr, "[cne-metal4] debug triangle pipeline failed\n");
+	}
+	if (gDebugPipeline != nil) {
+		[gEncoder setRenderPipelineState:gDebugPipeline];
+		[gEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:1];
+	}
+}
 
 static id LoadLibrary(const void* data, int size, int isMetallib)
 {
@@ -209,6 +231,7 @@ extern "C" int cne_metal4_app_init(void* layerPtr, int width, int height)
 	gAllocator = [gDevice newCommandAllocator];
 	gCommandBuffer = [gDevice newCommandBuffer];
 	gWidth = width; gHeight = height;
+	gDebugDraw = getenv("CNE_METAL4_DEBUG_DRAW") != nullptr;
 	gViewport[0]=0; gViewport[1]=0; gViewport[2]=width; gViewport[3]=height;
 	return (gQueue && gAllocator && gCommandBuffer) ? 1 : 0;
 }
@@ -230,6 +253,7 @@ extern "C" void cne_metal4_app_frame_end(void)
 	++sFrameNo;
 	fprintf(stderr, "[cne-metal4] frame_end f=%d target=%d drawable=%p\\n", sFrameNo, gTarget, (__bridge void*)gDrawable);
 	if (gTarget == -2) BeginTarget(-1, gWidth, gHeight, 1, 0,0,0,1, 1);
+	DrawDebugTriangle();
 	EndEncoder();
 	[gCommandBuffer endCommandBuffer];
 	const id cbs[] = { gCommandBuffer };

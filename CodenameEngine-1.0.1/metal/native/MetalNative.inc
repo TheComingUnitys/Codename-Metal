@@ -157,7 +157,7 @@
 				if (found != mslAttrs.end ())
 				{
 					auto info = found->second;
-					if (al.first.find ("Position") != std::string::npos) info.comps = 4; // OpenFL always supplies vec4 positions
+					if (al.first.find ("Position") != std::string::npos) info.comps = 3; // OpenFL VAO position is vec3 (stride 56)
 					byGl[al.second] = info;
 				}
 			}
