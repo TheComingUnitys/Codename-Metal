@@ -445,6 +445,13 @@
 			const float sy = normalizedPositions ? -2.0f : -2.0f / h;
 			float ortho[16] = { sx,0,0,0, 0,sy,0,0, 0,0,1,0, -1,1,0,1 };
 			std::memcpy (m, ortho, sizeof (ortho));
+			static int sFixLog = 0;
+			if (sFixLog < 8)
+			{
+				std::fprintf (stderr, "[cne-metal4] matrixfix prog=%d normalized=%d size=%dx%d\n",
+					MetalContext::state.currentProgram, normalizedPositions ? 1 : 0, w, h);
+				++sFixLog;
+			}
 		};
 		fixMatrix (vsBytes);
 
