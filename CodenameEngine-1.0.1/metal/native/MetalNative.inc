@@ -284,6 +284,7 @@
 		}
 
 		int textureIds[16]; int textureCount = 0;
+		bool samplesRenderTarget = false;
 		std::vector<uint8_t> uniformBytes;
 		uint32_t uniformSize = 0;
 		// A texture attached to any framebuffer is a render target: its live contents
@@ -307,6 +308,7 @@
 				if (t != textures.end () && t->second.width > 0)
 				{
 					const bool rt = t->second.isRenderTarget || textureIsAttachment (tex);
+					if (rt) samplesRenderTarget = true;
 					const bool created = sNativeTexCreated.find (tex) != sNativeTexCreated.end ();
 					bool dirty = false;
 					if (!created) dirty = true;
@@ -316,7 +318,7 @@
 						dirty = (v == sNativeTexVersion.end ()) || (v->second != t->second.uploadCount);
 					}
 					static int sTexLog = 0;
-					if (sTexLog < 8) { std::fprintf (stderr, "[cne-metal4] tex id=%d %dx%d rt=%d pixels=%zu upload=%d\n", tex, t->second.width, t->second.height, rt ? 1 : 0, t->second.pixels.size (), dirty ? 1 : 0); ++sTexLog; }
+					if (sTexLog < 24) { std::fprintf (stderr, "[cne-metal4] tex id=%d %dx%d rt=%d pixels=%zu upload=%d\n", tex, t->second.width, t->second.height, rt ? 1 : 0, t->second.pixels.size (), dirty ? 1 : 0); ++sTexLog; }
 					if (dirty)
 					{
 						const void* px = (!rt && !t->second.pixels.empty ()) ? t->second.pixels.data () : nullptr;
@@ -333,7 +335,7 @@
 			if (end > uniformSize) uniformSize = end;
 		}
 		static int sUniformLog = 0;
-		if (sUniformLog < 6)
+		if (sUniformLog < 12)
 		{
 			std::fprintf (stderr, "[cne-metal4] uniforms prog=%d size=%u:", MetalContext::state.currentProgram, uniformSize);
 			for (auto& u : program.uniforms)
@@ -409,7 +411,7 @@
 					const uint32_t fsOffset = u.hasSecond ? u.secondOffset : (u.hasFs ? u.fsOffset : u.offset);
 					stageCopy (fsBytes, fsSize, fsOffset, u.value);
 				}
-				if (sStageLog < 24)
+				if (sStageLog < 96)
 				{
 					std::fprintf (stderr, "[cne-metal4] ustage prog=%d name=%s vs=%d fs=%d off=%u second=%d(%u) vso=%u fso=%u\n",
 						MetalContext::state.currentProgram, u.name.c_str (), inVs ? 1 : 0, inFs ? 1 : 0,
@@ -495,8 +497,21 @@
 				auto b = buffers.find (bufferIds[slot]);
 				if (b != buffers.end () && b->second.bytes.size () >= (size_t)attribOff[i] + sizeof (float) * 2)
 				{
-					const float* p = reinterpret_cast<const float*> (b->second.bytes.data () + attribOff[i]);
-					normalizedPositions = std::fabs (p[0]) <= 2.0f && std::fabs (p[1]) <= 2.0f;
+					// Check several vertices, not just the first: a pixel-space
+					// full-screen quad also starts at (0,0).  Only a genuinely
+					// normalized 0..1 quad has every position within +/-2.
+					normalizedPositions = true;
+					int checked = 0;
+					const size_t stride = (size_t)(strides[slot] > 0 ? strides[slot] : 0);
+					for (int k = 0; k < 12; ++k)
+					{
+						const size_t off = (size_t)attribOff[i] + (size_t)k * stride;
+						if (off + sizeof (float) * 2 > b->second.bytes.size ()) break;
+						const float* p = reinterpret_cast<const float*> (b->second.bytes.data () + off);
+						++checked;
+						if (std::fabs (p[0]) > 2.0f || std::fabs (p[1]) > 2.0f) { normalizedPositions = false; break; }
+					}
+					if (checked == 0) normalizedPositions = false;
 				}
 			}
 			break;
@@ -504,7 +519,7 @@
 		auto fixMatrix = [&] (std::vector<uint8_t>& bytes)
 		{
 			static int sMtxLog = 0;
-			if (sMtxLog < 16)
+			if (sMtxLog < 64)
 			{
 				const float* dbg = bytes.size () >= 64 ? (const float*)bytes.data () : nullptr;
 				std::fprintf (stderr, "[cne-metal4] mtxcheck prog=%d size=%zu m0=%.6f m1=%.6f m5=%.6f m10=%.6f\n",
@@ -517,7 +532,12 @@
 			// Degenerate scale (only translation survived the override) is as unusable as an
 			// all-zero matrix for 2D vertices.
 			const float scaleSum = std::fabs (m[0]) + std::fabs (m[1]) + std::fabs (m[5]) + std::fabs (m[10]);
-			if (scaleSum > 0.001f) return;
+			// Full-screen composite quads use 0..1 positions.  If such a draw samples a
+			// render target but carries a leftover pixel-space projection (~2/width), the
+			// quad covers one pixel and the (correctly rendered) FBO never reaches the
+			// screen.  Treat that combination as the normalized screen composite.
+			const bool pixelProjection = std::fabs (m[0]) < 0.01f;
+			if (scaleSum > 0.001f && !(samplesRenderTarget && normalizedPositions && pixelProjection)) return;
 			int w = (int)MetalContext::state.backbufferWidth;
 			int h = (int)MetalContext::state.backbufferHeight;
 			if (MetalContext::state.currentFramebuffer != 0)
@@ -540,6 +560,45 @@
 		};
 		fixMatrix (vsBytes);
 
+		static int sRtDrawLog = 0;
+		if (samplesRenderTarget && sRtDrawLog < 16)
+		{
+			const float* m = (vsBytes.size () >= 16) ? reinterpret_cast<const float*> (vsBytes.data ()) : nullptr;
+			float px = 0.f, py = 0.f;
+			bool havePos = false;
+			if (positionSlot >= 0)
+			{
+				for (int i = 0; i < attribCount; ++i)
+				{
+					if (attribLoc[i] != positionSlot || attribBuf[i] < 0 || attribBuf[i] >= bufferCount) continue;
+					auto b = buffers.find (bufferIds[attribBuf[i]]);
+					if (b != buffers.end () && b->second.bytes.size () >= (size_t)attribOff[i] + sizeof (float) * 2)
+					{
+						const float* p = reinterpret_cast<const float*> (b->second.bytes.data () + attribOff[i]);
+						px = p[0]; py = p[1]; havePos = true;
+					}
+					break;
+				}
+			}
+			float u0 = 0.f, v0 = 0.f;
+			bool haveUv = false;
+			if (attribCount > 1 && attribBuf[1] >= 0 && attribBuf[1] < bufferCount)
+			{
+				auto b = buffers.find (bufferIds[attribBuf[1]]);
+				if (b != buffers.end () && b->second.bytes.size () >= (size_t)attribOff[1] + sizeof (float) * 2)
+				{
+					const float* uv = reinterpret_cast<const float*> (b->second.bytes.data () + attribOff[1]);
+					u0 = uv[0]; v0 = uv[1]; haveUv = true;
+				}
+			}
+			std::fprintf (stderr, "[cne-metal4] rtdraw prog=%d fb=%d m=%.6f,%.6f,%.6f,%.6f pos0=%.1f,%.1f havePos=%d uv0=%.2f,%.2f haveUv=%d slots=%d,%d,%d\n",
+				MetalContext::state.currentProgram, MetalContext::state.currentFramebuffer,
+				m ? m[0] : 0.f, m ? m[5] : 0.f, m ? m[12] : 0.f, m ? m[13] : 0.f,
+				px, py, havePos ? 1 : 0, u0, v0, haveUv ? 1 : 0, positionSlot,
+				attribCount > 0 ? attribLoc[0] : -1, attribCount > 1 ? attribLoc[1] : -1,
+				attribCount > 2 ? attribLoc[2] : -1);
+			++sRtDrawLog;
+		}
 		const MetalContext::State& st = MetalContext::state;
 		cne_metal4_app_draw (MetalContext::state.currentProgram, st.blendEnabled ? 1 : 0,
 			Metal4BlendFactor (st.blendSrcRGB), Metal4BlendFactor (st.blendDstRGB),

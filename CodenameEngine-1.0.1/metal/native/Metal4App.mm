@@ -30,6 +30,11 @@ static uint64_t gEventValue = 0;
 static bool gPersistDirty = false;
 static bool gFrameDirty = false;
 static bool gHeadless = false;
+static bool gReadback = false;
+static bool gVerboseLog = false;
+static id<MTLTexture> gCaptureTex = nil;
+static int gCaptureW = 0, gCaptureH = 0;
+static int gCaptureSaved = 0;
 // Resources replaced mid-frame stay alive until the frame completes; after the
 // next frame-begin wait they are removed from the residency sets and released.
 static std::vector<id> gRetiredResources;
@@ -181,8 +186,14 @@ static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixel
 {
 	const MTLPixelFormat pf = PixelFormatForGl(glFormat);
 	auto it = gTextures.find(textureId);
+	// Never recreate an existing render target just because a later sampler bind
+	// reports a different GL upload format: the render pass may already be attached
+	// to the current texture, and replacing it would leave the composite sampling a
+	// blank new texture (the screen went black after the per-format change).
+	bool formatMatches = true;
+	if (it != gTextures.end()) formatMatches = ([it->second pixelFormat] == pf) || isRT;
 	if (it != gTextures.end() && (NSUInteger)[it->second width] == (NSUInteger)w && (NSUInteger)[it->second height] == (NSUInteger)h
-		&& (MTLPixelFormat)[it->second pixelFormat] == pf
+		&& formatMatches
 		&& (([it->second usage] & MTLTextureUsageRenderTarget) != 0 || !isRT)) {
 		if (pixels != nullptr) {
 			[it->second replaceRegion:MTLRegionMake2D(0,0,(NSUInteger)w,(NSUInteger)h) mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)w*4];
@@ -219,7 +230,7 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 	static const bool fboDebugClear = getenv("CNE_METAL4_DEBUG_FBO_CLEAR") != nullptr;
 	if (!isScreen && fboDebugClear) { r = 1.0f; g = 0.0f; b = 1.0f; a = 1.0f; clearColor = 1; }
 	static int sTargetLog = 0;
-	if (sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d rgba=%.2f,%.2f,%.2f,%.2f\n", sFrameNo, isScreen, textureId, w, h, clearColor, r, g, b, a); ++sTargetLog; }
+	if (gVerboseLog || sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d rgba=%.2f,%.2f,%.2f,%.2f\n", sFrameNo, isScreen, textureId, w, h, clearColor, r, g, b, a); ++sTargetLog; }
 	EndEncoder();
 	gPass = [MTL4RenderPassDescriptor new];
 	gPass.renderTargetWidth = (NSUInteger)w;
@@ -240,6 +251,13 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 	gPass.colorAttachments[0].storeAction = MTLStoreActionStore;
 	gPass.colorAttachments[0].clearColor = MTLClearColorMake(r,g,b,a);
 	gEncoder = [gCommandBuffer renderCommandEncoderWithDescriptor:gPass];
+	// Metal 4 render passes are not implicitly ordered with earlier encoders.  The
+	// screen composite samples the FBO written by the immediately preceding encoder;
+	// without a consumer barrier the sample can land before the FBO write is visible,
+	// which showed up as an image that was correct on some frames and black on others.
+	[gEncoder barrierAfterQueueStages:(MTLStageVertex | MTLStageFragment)
+	                     beforeStages:(MTLStageVertex | MTLStageFragment)
+	                visibilityOptions:MTL4VisibilityOptionDevice];
 	if (gViewport[2] > 0) {
 		// OpenGL viewport/scissor y grows from the bottom; Metal's grows from the top.
 		double vy = (double)gViewport[1];
@@ -390,6 +408,9 @@ static int InitDeviceCommon(int width, int height)
 	gDebugDraw = getenv("CNE_METAL4_DEBUG_DRAW") != nullptr;
 	gDebugFbo = getenv("CNE_METAL4_DEBUG_FBO") != nullptr;
 	gDebugEngine = getenv("CNE_METAL4_DEBUG_ENGINE") != nullptr;
+	gReadback = getenv("CNE_METAL4_READBACK") != nullptr;
+	gVerboseLog = getenv("CNE_METAL4_VERBOSE") != nullptr;
+	if (gReadback && gLayer != nil) gLayer.framebufferOnly = NO;
 	gViewport[0]=0; gViewport[1]=0; gViewport[2]=width; gViewport[3]=height;
 	return 1;
 }
@@ -447,6 +468,90 @@ extern "C" void cne_metal4_app_target(int textureId, int width, int height, int 
 	if (gHeadless && isScreen) return;
 	BeginTarget(textureId, width, height, isScreen, r, g, b, a, clearColor);
 }
+static void CaptureScreen()
+{
+	if (!gReadback || gDrawable == nil) return;
+	id<MTLTexture> src = gDrawable.texture;
+	const int w = (int)[src width], h = (int)[src height];
+	if (w <= 0 || h <= 0) return;
+	if (gCaptureTex == nil || gCaptureW != w || gCaptureH != h)
+	{
+		MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:[src pixelFormat] width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+		td.usage = MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModeShared;
+		gCaptureTex = [gDevice newTextureWithDescriptor:td];
+		gCaptureW = w; gCaptureH = h;
+		MarkResident(gCaptureTex);
+	}
+	id<MTL4ComputeCommandEncoder> ce = [gCommandBuffer computeCommandEncoder];
+	if (ce == nil || gCaptureTex == nil) return;
+	[ce copyFromTexture:src toTexture:gCaptureTex];
+	[ce endEncoding];
+}
+
+static void ReadCapture()
+{
+	if (!gReadback || gCaptureTex == nil || gCaptureW <= 0 || gCaptureH <= 0) return;
+	const int w = gCaptureW, h = gCaptureH;
+	std::vector<uint8_t> px((size_t)w * (size_t)h * 4);
+	[gCaptureTex getBytes:px.data() bytesPerRow:(NSUInteger)w * 4 fromRegion:MTLRegionMake2D(0,0,(NSUInteger)w,(NSUInteger)h) mipmapLevel:0];
+	uint64_t nonBlack = 0;
+	uint64_t sumR = 0, sumG = 0, sumB = 0;
+	for (size_t i = 0; i + 3 < px.size(); i += 4)
+	{
+		const uint8_t b = px[i + 0], g = px[i + 1], r = px[i + 2];
+		if ((r | g | b) > 8) { ++nonBlack; sumR += r; sumG += g; sumB += b; }
+	}
+	const double pct = 100.0 * (double)nonBlack / (double)((size_t)w * h);
+	fprintf(stderr, "[cne-metal4] capture f=%d nonblack=%llu (%.2f%%) avgRGB=%.1f,%.1f,%.1f\n",
+		sFrameNo, (unsigned long long)nonBlack, pct,
+		nonBlack ? (double)sumR / nonBlack : 0.0, nonBlack ? (double)sumG / nonBlack : 0.0, nonBlack ? (double)sumB / nonBlack : 0.0);
+	// Also measure the current render targets directly: if the final FBO (the one
+	// the screen composite samples) is black, the screen is black even though every
+	// draw command was issued.
+	static int sFboStats = 0;
+	if (sFboStats < 48 && (sFrameNo % 15) == 0)
+	{
+		int logged = 0;
+		for (auto& kv : gTextures)
+		{
+			id tex = kv.second;
+			if (tex == nil || (([tex usage] & MTLTextureUsageRenderTarget) == 0)) continue;
+			const int tw = (int)[tex width], th = (int)[tex height];
+			// Full-screen render targets only; every uploaded texture carries
+			// RenderTarget usage, so size is the useful discriminator here.
+			if (tw <= 0 || th <= 0 || (int64_t)tw * th < 1000000 || (int64_t)tw * th > 8000000 || logged >= 8) continue;
+			std::vector<uint8_t> fb((size_t)tw * (size_t)th * 4);
+			[tex getBytes:fb.data() bytesPerRow:(NSUInteger)tw * 4 fromRegion:MTLRegionMake2D(0,0,(NSUInteger)tw,(NSUInteger)th) mipmapLevel:0];
+			uint64_t nb = 0;
+			for (size_t i = 0; i + 3 < fb.size(); i += 4) if ((fb[i] | fb[i+1] | fb[i+2]) > 8) ++nb;
+			fprintf(stderr, "[cne-metal4] fbo id=%d %dx%d nonblack=%llu (%.2f%%)\n", kv.first, tw, th,
+				(unsigned long long)nb, 100.0 * (double)nb / ((double)tw * th));
+			++logged;
+		}
+		++sFboStats;
+	}
+	if (nonBlack == 0 || gCaptureSaved >= 8) return;
+	char path[160];
+	std::snprintf(path, sizeof(path), "/tmp/cne-frame-%04d.ppm", sFrameNo);
+	std::FILE* f = std::fopen(path, "wb");
+	if (f == nullptr) return;
+	const int dw = w / 4, dh = h / 4;
+	std::fprintf(f, "P6\n%d %d\n255\n", dw, dh);
+	for (int y = 0; y < dh; ++y)
+	{
+		for (int x = 0; x < dw; ++x)
+		{
+			const size_t si = ((size_t)(y * 4) * (size_t)w + (size_t)(x * 4)) * 4;
+			const uint8_t rgb[3] = { px[si + 2], px[si + 1], px[si + 0] };
+			std::fwrite(rgb, 1, 3, f);
+		}
+	}
+	std::fclose(f);
+	++gCaptureSaved;
+	fprintf(stderr, "[cne-metal4] capture wrote %s\n", path);
+}
+
 extern "C" void cne_metal4_app_frame_end(void)
 {
 	if (!gBegun) return;
@@ -456,6 +561,7 @@ extern "C" void cne_metal4_app_frame_end(void)
 	DrawDebugFbo();
 	DrawDebugTriangle();
 	EndEncoder();
+	CaptureScreen();
 	CommitResidency();
 	[gCommandBuffer endCommandBuffer];
 	const id cbs[] = { gCommandBuffer };
@@ -464,7 +570,8 @@ extern "C" void cne_metal4_app_frame_end(void)
 	++gEventValue;
 	if (gEvent != nil) [gQueue signalEvent:gEvent value:gEventValue];
 	if (gDrawable != nil) { [gQueue signalDrawable:gDrawable]; [gDrawable present]; gDrawable = nil; }
-	if (gHeadless) WaitForGpu();
+	if (gHeadless || gReadback) WaitForGpu();
+	if (gReadback) ReadCapture();
 	gTarget = -2; gBegun = false;
 }
 static int CurrentTargetHeight()
@@ -528,7 +635,7 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	if (progIt == gPrograms.end()) return;
 	if (gEncoder == nil) return;
 	static int sDrawLog = 0;
-	if (sDrawLog < 32) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d tex0=%d idx=%d count=%d target=%d vs=%d fs=%d const=%d blend=%d src=%d dst=%d\n", program, bufferCount, attribCount, textureCount, textureCount > 0 ? textureIds[0] : -1, indexSize, indexCount, gTarget, vsUniformSize, fsUniformSize, constantCount, blendEnabled, srcRGB, dstRGB); ++sDrawLog; }
+	if (gVerboseLog || sDrawLog < 48) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d tex0=%d idx=%d count=%d target=%d vs=%d fs=%d const=%d blend=%d src=%d dst=%d scissor=%d x=%d y=%d w=%d h=%d\n", program, bufferCount, attribCount, textureCount, textureCount > 0 ? textureIds[0] : -1, indexSize, indexCount, gTarget, vsUniformSize, fsUniformSize, constantCount, blendEnabled, srcRGB, dstRGB, gScissor ? 1 : 0, gScissorRect[0], gScissorRect[1], gScissorRect[2], gScissorRect[3]); ++sDrawLog; }
 	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, TargetPixelFormat(gTarget), constantLocations, constantComponents, constantCount);
 	if (pso == nil) return;
 	[gEncoder setRenderPipelineState:pso];
@@ -612,6 +719,7 @@ extern "C" void cne_metal4_app_shutdown(void){
 	gEncoder=nil; gPass=nil; gCommandBuffer=nil; gAllocator=nil;
 	if (gResidentPersist != nil) [gResidentPersist removeAllAllocations];
 	if (gResidentFrame != nil) [gResidentFrame removeAllAllocations];
+	gCaptureTex=nil; gCaptureW=gCaptureH=0; gCaptureSaved=0;
 	gResidentPersist=nil; gResidentFrame=nil; gEvent=nil; gEventValue=0;
 	gQueue=nil; gDevice=nil;
 	gTransient.clear(); gTextures.clear(); gBuffers.clear(); gPrograms.clear(); gPipelines.clear();
