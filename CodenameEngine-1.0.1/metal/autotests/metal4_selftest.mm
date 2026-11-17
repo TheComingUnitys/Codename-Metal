@@ -52,8 +52,8 @@ int main()
 
 	// 1x1 opaque white texture.
 	const unsigned char white[4] = {255, 255, 255, 255};
-	cne_metal4_app_texture(whiteTex, 1, 1, 0, white);
-	cne_metal4_app_texture(fbo, W, H, 1, nullptr);
+	cne_metal4_app_texture(whiteTex, 1, 1, 0, white, 0x1908);
+	cne_metal4_app_texture(fbo, W, H, 1, nullptr, 0x1908);
 
 	if (!cne_metal4_app_program(program, kVS, (int)std::strlen(kVS), 0, kFS, (int)std::strlen(kFS), 0, nullptr, 0))
 		return fail("program compile");

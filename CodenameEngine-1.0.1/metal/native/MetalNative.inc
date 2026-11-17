@@ -24,7 +24,7 @@
 	extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
 	extern "C" void cne_metal4_app_viewport (int x, int y, int w, int h);
 	extern "C" void cne_metal4_app_scissor (int enabled, int x, int y, int w, int h);
-	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels);
+	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels, int format);
 	extern "C" void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
 	extern "C" int cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib, const void* fsData, int fsSize, int fsIsMetallib, const int* attribLocations, int attribCount);
 	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const int* constantLocations, const int* constantComponents, const float* constantValues, int constantCount, const void* vsUniformBytes, int vsUniformSize, const void* fsUniformBytes, int fsUniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
@@ -286,6 +286,18 @@
 		int textureIds[16]; int textureCount = 0;
 		std::vector<uint8_t> uniformBytes;
 		uint32_t uniformSize = 0;
+		// A texture attached to any framebuffer is a render target: its live contents
+		// come from the GPU, and the CPU mirror is zero/stale.  Uploading that mirror on
+		// every sample overwrote the rendered FBO with zeros (the composite went black
+		// and elements flickered as the pass order changed).
+		auto textureIsAttachment = [&] (int id) -> bool
+		{
+			for (auto& fb : framebuffers)
+				if (fb.second.texture == id) return true;
+			return false;
+		};
+		static std::set<int> sNativeTexCreated;
+		static std::map<int, uint32_t> sNativeTexVersion;
 		for (auto& u : program.uniforms)
 		{
 			if (u.isSampler)
@@ -294,10 +306,24 @@
 				auto t = textures.find (tex);
 				if (t != textures.end () && t->second.width > 0)
 				{
+					const bool rt = t->second.isRenderTarget || textureIsAttachment (tex);
+					const bool created = sNativeTexCreated.find (tex) != sNativeTexCreated.end ();
+					bool dirty = false;
+					if (!created) dirty = true;
+					else if (!rt)
+					{
+						auto v = sNativeTexVersion.find (tex);
+						dirty = (v == sNativeTexVersion.end ()) || (v->second != t->second.uploadCount);
+					}
 					static int sTexLog = 0;
-					if (sTexLog < 8) { std::fprintf (stderr, "[cne-metal4] tex id=%d %dx%d rt=%d pixels=%zu\n", tex, t->second.width, t->second.height, t->second.isRenderTarget ? 1 : 0, t->second.pixels.size ()); ++sTexLog; }
-					cne_metal4_app_texture (tex, t->second.width, t->second.height, t->second.isRenderTarget ? 1 : 0,
-						t->second.pixels.empty () ? nullptr : t->second.pixels.data ());
+					if (sTexLog < 8) { std::fprintf (stderr, "[cne-metal4] tex id=%d %dx%d rt=%d pixels=%zu upload=%d\n", tex, t->second.width, t->second.height, rt ? 1 : 0, t->second.pixels.size (), dirty ? 1 : 0); ++sTexLog; }
+					if (dirty)
+					{
+						const void* px = (!rt && !t->second.pixels.empty ()) ? t->second.pixels.data () : nullptr;
+						cne_metal4_app_texture (tex, t->second.width, t->second.height, rt ? 1 : 0, px, t->second.format);
+						sNativeTexCreated.insert (tex);
+						if (!rt) sNativeTexVersion[tex] = t->second.uploadCount;
+					}
 					while (textureCount <= u.textureUnit && textureCount < 16) textureIds[textureCount++] = 0;
 					if (u.textureUnit < 16) textureIds[u.textureUnit] = tex;
 				}
@@ -341,12 +367,62 @@
 			if (end > size) { bytes.resize (end, 0); size = end; }
 			std::memcpy (bytes.data () + offset, value.data (), value.size ());
 		};
+		// The authoritative stage of a uniform is its declaration in the MSL
+		// `XlatMtlUniforms` block.  The Haxe bridge's stage flag was observed to mark
+		// every uniform as fragment on this build, which left the vertex block empty and
+		// made openfl_Matrix read unbound memory (all vertices at w=0 -> black).  Use
+		// the MSL source to decide, and keep the reported offsets as the layout.
+		std::string vsSource, fsSource;
+		if (vsInfo != shaders.end ()) vsSource.assign ((const char*)vsInfo->second.source.data (), vsInfo->second.source.size ());
+		auto fsInfo = shaders.find (program.fragmentShader);
+		if (fsInfo != shaders.end ()) fsSource.assign ((const char*)fsInfo->second.source.data (), fsInfo->second.source.size ());
+		auto uniformBlock = [] (const std::string& src) -> std::string
+		{
+			const size_t start = src.find ("struct XlatMtlUniforms");
+			if (start == std::string::npos) return std::string ();
+			const size_t end = src.find ("};", start);
+			return src.substr (start, end == std::string::npos ? std::string::npos : end - start);
+		};
+		const std::string vsUniformBlock = uniformBlock (vsSource);
+		const std::string fsUniformBlock = uniformBlock (fsSource);
+		auto declares = [] (const std::string& block, const std::string& name) -> bool
+		{
+			if (block.empty () || name.empty ()) return false;
+			return block.find (name + ";") != std::string::npos
+				|| block.find (name + "[") != std::string::npos;
+		};
+		static int sStageLog = 0;
 		for (auto& u : program.uniforms)
 		{
 			if (u.isSampler || u.value.empty ()) continue;
-			if (u.hasVs) stageCopy (vsBytes, vsSize, u.vsOffset, u.value);
-			if (u.hasFs) stageCopy (fsBytes, fsSize, u.fsOffset, u.value);
-			if (!u.hasVs && !u.hasFs) stageCopy (vsBytes, vsSize, u.offset, u.value);
+			bool inVs = declares (vsUniformBlock, u.name);
+			bool inFs = declares (fsUniformBlock, u.name);
+			// Some generated stages use a different uniform-struct name; fall back to
+			// the declaration search over the whole stage source.
+			if (vsUniformBlock.empty ()) inVs = declares (vsSource, u.name);
+			if (fsUniformBlock.empty ()) inFs = declares (fsSource, u.name);
+			if (inVs || inFs)
+			{
+				if (inVs) stageCopy (vsBytes, vsSize, u.hasVs ? u.vsOffset : u.offset, u.value);
+				if (inFs)
+				{
+					const uint32_t fsOffset = u.hasSecond ? u.secondOffset : (u.hasFs ? u.fsOffset : u.offset);
+					stageCopy (fsBytes, fsSize, fsOffset, u.value);
+				}
+				if (sStageLog < 24)
+				{
+					std::fprintf (stderr, "[cne-metal4] ustage prog=%d name=%s vs=%d fs=%d off=%u second=%d(%u) vso=%u fso=%u\n",
+						MetalContext::state.currentProgram, u.name.c_str (), inVs ? 1 : 0, inFs ? 1 : 0,
+						u.offset, u.hasSecond ? 1 : 0, u.secondOffset, u.vsOffset, u.fsOffset);
+					++sStageLog;
+				}
+			}
+			else
+			{
+				if (u.hasVs) stageCopy (vsBytes, vsSize, u.vsOffset, u.value);
+				if (u.hasFs) stageCopy (fsBytes, fsSize, u.fsOffset, u.value);
+				if (!u.hasVs && !u.hasFs) stageCopy (vsBytes, vsSize, u.offset, u.value);
+			}
 		}
 
 		const void* indexBytes = nullptr; int indexSize = 0;
@@ -427,6 +503,15 @@
 		}
 		auto fixMatrix = [&] (std::vector<uint8_t>& bytes)
 		{
+			static int sMtxLog = 0;
+			if (sMtxLog < 16)
+			{
+				const float* dbg = bytes.size () >= 64 ? (const float*)bytes.data () : nullptr;
+				std::fprintf (stderr, "[cne-metal4] mtxcheck prog=%d size=%zu m0=%.6f m1=%.6f m5=%.6f m10=%.6f\n",
+					MetalContext::state.currentProgram, bytes.size (),
+					dbg ? dbg[0] : 0.f, dbg ? dbg[1] : 0.f, dbg ? dbg[5] : 0.f, dbg ? dbg[10] : 0.f);
+				++sMtxLog;
+			}
 			if (bytes.size () < 64) return;
 			float* m = (float*)bytes.data ();
 			// Degenerate scale (only translation survived the override) is as unusable as an

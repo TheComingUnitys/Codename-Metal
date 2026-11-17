@@ -500,7 +500,13 @@ namespace lime {
 			struct Uniform
 			{
 				bgfx::UniformHandle handle = BGFX_INVALID_HANDLE;
+				std::string name;
 				uint32_t offset = 0;
+				// Offset of the second (fragment) declaration of a name shared by both
+				// stages.  Kept independently of the stage flag so the native upload can
+				// still split VS/FS correctly if the Haxe-side stage lookup is wrong.
+				uint32_t secondOffset = 0;
+				bool hasSecond = false;
 				// [cne-metal4] MSL uniform structs restart at buffer(0) in each stage, and
 				// the translator reports one (stage, offset) pair per declaration.  A name
 				// declared in both stages gets both offsets here; one shared CPU value is
@@ -3704,13 +3710,16 @@ namespace lime {
 					if (index > 0 && (size_t)index <= data.uniforms.size ())
 					{
 						ProgramData::Uniform& u = data.uniforms[index - 1];
-						if (stage == 0) { if (!u.hasVs) { u.hasVs = true; u.vsOffset = offset; } }
-						else            { if (!u.hasFs) { u.hasFs = true; u.fsOffset = offset; } }
+						u.secondOffset = offset;
+						u.hasSecond = true;
+						if (stage == 0) { u.hasVs = true; u.vsOffset = offset; }
+						else            { u.hasFs = true; u.fsOffset = offset; }
 					}
 					continue;
 				}
 
 				ProgramData::Uniform uniform;
+				uniform.name = name;
 				uniform.offset = offset;
 				uniform.hasVs = (stage == 0);
 				uniform.vsOffset = (stage == 0) ? offset : 0;
@@ -7958,7 +7967,9 @@ namespace lime {
 		ProfScope prof (&gProfTexUs);
 		CNE_COV ("lime_gl_tex_sub_image_2d");
 		TextureData* texture = CurrentTexture (target);
-		if (texture == nullptr || !bgfx::isValid (texture->handle)) return;
+		// The native MTL4 path keeps its own GPU texture and needs the CPU mirror even
+		// when bgfx has no handle (headless / native-only textures).
+		if (texture == nullptr) return;
 
 		const uint8_t* source = PointerFromDouble (data);
 		if (source == nullptr || width <= 0 || height <= 0) return;
@@ -7980,17 +7991,28 @@ namespace lime {
 			const size_t rowBytes = (size_t)width * bpp;
 			const size_t mirrorStride = (size_t)texture->width * bpp;
 			const size_t mirrorSize = (size_t)texture->height * mirrorStride;
-			if (texture->pixels.size () == mirrorSize)
+			// Font atlases are allocated with glTexImage2D(..., nullptr) and then filled
+			// glyph-by-glyph; tex_image_2d intentionally leaves the mirror empty for those,
+			// so allocate it on the first sub-image or every glyph would be dropped.
+			if (texture->pixels.size () != mirrorSize) texture->pixels.assign (mirrorSize, 0);
 			{
 				for (int row = 0; row < height; ++row)
 				{
 					std::memcpy (texture->pixels.data () + (size_t)(yoffset + row) * mirrorStride + (size_t)xoffset * bpp,
 						source + (size_t)row * rowBytes, rowBytes);
 				}
+				// [cne-metal4] glTexSubImage2D builds font atlases/video frames.  The
+				// native texture upload is versioned by uploadCount; without this bump the
+				// new glyphs never reached Metal (text was missing/stale).
+				++texture->uploadCount;
 			}
 		}
 
-		if (!texture->handleIsRt)
+		if (!bgfx::isValid (texture->handle))
+		{
+			// Native-only texture: the mirror above is the authoritative copy.
+		}
+		else if (!texture->handleIsRt)
 		{
 			bgfx::updateTexture2D (texture->handle, 0, (uint8_t)level, (uint16_t)xoffset, (uint16_t)yoffset,
 				(uint16_t)width, (uint16_t)height,

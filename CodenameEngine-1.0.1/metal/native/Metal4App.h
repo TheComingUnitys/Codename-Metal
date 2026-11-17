@@ -15,7 +15,7 @@ void cne_metal4_app_target (int textureId, int width, int height, int isScreen,
 	float clearR, float clearG, float clearB, float clearA, int clearColor);
 void cne_metal4_app_viewport (int x, int y, int w, int h);
 void cne_metal4_app_scissor (int enabled, int x, int y, int w, int h);
-void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels);
+void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels, int format);
 void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
 int  cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib,
 	const void* fsData, int fsSize, int fsIsMetallib,

@@ -161,17 +161,35 @@ static id LoadLibrary(const void* data, int size, int isMetallib)
 	return [gDevice newLibraryWithSource:source options:nil error:&err];
 }
 
-static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixels)
+static MTLPixelFormat PixelFormatForGl(int glFormat)
 {
+	// OpenFL/Lime BitmapData on macOS is BGRA; expanded ALPHA/LUMINANCE uploads are
+	// converted to RGBA.  The texture must use the matching Metal format so the
+	// hardware swizzle presents R/B in the right order (a yellow sprite used to
+	// come out cyan).
+	return (glFormat == 0x80E1 /*GL_BGRA*/ || glFormat == 0x93A1 /*GL_BGRA8*/)
+		? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
+}
+static MTLPixelFormat TargetPixelFormat(int textureId)
+{
+	if (textureId == -1) return MTLPixelFormatBGRA8Unorm;
+	auto it = gTextures.find(textureId);
+	return (it != gTextures.end()) ? (MTLPixelFormat)[it->second pixelFormat] : MTLPixelFormatBGRA8Unorm;
+}
+
+static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixels, int glFormat)
+{
+	const MTLPixelFormat pf = PixelFormatForGl(glFormat);
 	auto it = gTextures.find(textureId);
 	if (it != gTextures.end() && (NSUInteger)[it->second width] == (NSUInteger)w && (NSUInteger)[it->second height] == (NSUInteger)h
+		&& (MTLPixelFormat)[it->second pixelFormat] == pf
 		&& (([it->second usage] & MTLTextureUsageRenderTarget) != 0 || !isRT)) {
 		if (pixels != nullptr) {
 			[it->second replaceRegion:MTLRegionMake2D(0,0,(NSUInteger)w,(NSUInteger)h) mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)w*4];
 		}
 		return it->second;
 	}
-	MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+	MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
 	// A texture may be uploaded/sampled before OpenFL attaches it to a framebuffer.
 	// Metal cannot add usages after creation, so every texture gets RenderTarget up
 	// front; otherwise the first render pass into it fails validation (black FBO).
@@ -201,7 +219,7 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 	static const bool fboDebugClear = getenv("CNE_METAL4_DEBUG_FBO_CLEAR") != nullptr;
 	if (!isScreen && fboDebugClear) { r = 1.0f; g = 0.0f; b = 1.0f; a = 1.0f; clearColor = 1; }
 	static int sTargetLog = 0;
-	if (sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d\n", sFrameNo, isScreen, textureId, w, h, clearColor); ++sTargetLog; }
+	if (sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d rgba=%.2f,%.2f,%.2f,%.2f\n", sFrameNo, isScreen, textureId, w, h, clearColor, r, g, b, a); ++sTargetLog; }
 	EndEncoder();
 	gPass = [MTL4RenderPassDescriptor new];
 	gPass.renderTargetWidth = (NSUInteger)w;
@@ -212,7 +230,10 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 		if (gDrawable == nil) { gTarget = -1; return; }
 		color = gDrawable.texture;
 	} else {
-		color = EnsureTexture(textureId, w, h, 1, nullptr);
+		int targetGlFormat = 0x80E1;
+		auto existing = gTextures.find(textureId);
+		if (existing != gTextures.end() && [existing->second pixelFormat] == MTLPixelFormatRGBA8Unorm) targetGlFormat = 0x1908;
+		color = EnsureTexture(textureId, w, h, 1, nullptr, targetGlFormat);
 	}
 	gPass.colorAttachments[0].texture = color;
 	gPass.colorAttachments[0].loadAction = clearColor ? MTLLoadActionClear : MTLLoadActionLoad;
@@ -453,6 +474,8 @@ static int CurrentTargetHeight()
 	return gHeight;
 }
 extern "C" void cne_metal4_app_viewport(int x,int y,int w,int h){
+	static int sVpLog = 0;
+	if (sVpLog < 24) { fprintf(stderr, "[cne-metal4] viewport x=%d y=%d %dx%d target=%d\n", x, y, w, h, gTarget); ++sVpLog; }
 	gViewport[0]=x; gViewport[1]=y; gViewport[2]=w; gViewport[3]=h;
 	if(gEncoder){
 		int th = CurrentTargetHeight();
@@ -461,6 +484,8 @@ extern "C" void cne_metal4_app_viewport(int x,int y,int w,int h){
 	}
 }
 extern "C" void cne_metal4_app_scissor(int enabled,int x,int y,int w,int h){
+	static int sScLog = 0;
+	if (sScLog < 24) { fprintf(stderr, "[cne-metal4] scissor enabled=%d x=%d y=%d %dx%d target=%d\n", enabled, x, y, w, h, gTarget); ++sScLog; }
 	gScissor=enabled; gScissorRect[0]=x;gScissorRect[1]=y;gScissorRect[2]=w;gScissorRect[3]=h;
 	if(gEncoder){
 		if(enabled){
@@ -472,7 +497,7 @@ extern "C" void cne_metal4_app_scissor(int enabled,int x,int y,int w,int h){
 		}
 	}
 }
-extern "C" void cne_metal4_app_texture(int id,int w,int h,int isRT,const void* pixels){ EnsureTexture(id,w,h,isRT,pixels); }
+extern "C" void cne_metal4_app_texture(int id,int w,int h,int isRT,const void* pixels,int format){ EnsureTexture(id,w,h,isRT,pixels,format); }
 extern "C" void cne_metal4_app_buffer(int bufferId,const void* bytes,int size,int isIndex){
 	(void)isIndex;
 	auto it=gBuffers.find(bufferId);
@@ -503,8 +528,8 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	if (progIt == gPrograms.end()) return;
 	if (gEncoder == nil) return;
 	static int sDrawLog = 0;
-	if (sDrawLog < 12) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d idx=%d count=%d target=%d\n", program, bufferCount, attribCount, textureCount, indexSize, indexCount, gTarget); ++sDrawLog; }
-	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, (gTarget == -1 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm), constantLocations, constantComponents, constantCount);
+	if (sDrawLog < 32) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d tex0=%d idx=%d count=%d target=%d vs=%d fs=%d const=%d blend=%d src=%d dst=%d\n", program, bufferCount, attribCount, textureCount, textureCount > 0 ? textureIds[0] : -1, indexSize, indexCount, gTarget, vsUniformSize, fsUniformSize, constantCount, blendEnabled, srcRGB, dstRGB); ++sDrawLog; }
+	id pso = GetPipeline(progIt->second, attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff, attribCount, bufferCount, strides, blendEnabled, srcRGB, dstRGB, srcA, dstA, TargetPixelFormat(gTarget), constantLocations, constantComponents, constantCount);
 	if (pso == nil) return;
 	[gEncoder setRenderPipelineState:pso];
 
