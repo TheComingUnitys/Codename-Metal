@@ -1,7 +1,9 @@
 # Metal 4 native draw — black-screen diagnosis and fix (2026-11-16)
 
-Status: fixes are built into `~/Downloads/CodenameEngine-arm64-m4native.app` and the
-default bgfx path is untouched. The native path still needs a human play-test.
+Status (2026-11-17): the native path now renders the game scene stably; the
+black-screen / flashing-picture bug is fixed. The default bgfx path is untouched.
+Gameplay / menu / pause / FBO-filter / resize regression is still pending, so the
+native path is not yet declared complete.
 
 ## Root cause of the black engine draws
 
@@ -96,3 +98,26 @@ and `vd ... loc3->buf1 ... cloc0->buf2 ...`. Default bgfx path:
 - Sampler slots are mapped by GL texture unit; multi-sampler custom shaders may
   need an explicit slot binding.
 - Blend equation (only add) and depth/stencil are not translated.
+
+
+## 2026-11-17: why the picture flashed
+
+After the attribute/texture fixes, the offscreen chain was correct: FBO 54 and
+FBO 66 read back ~95% non-black, while the drawable was black on most frames and
+only occasionally contained the scene. The screen composite (`prog=4`, sampling
+FBO 66) sampled the FBO in a later encoder without any ordering relative to the
+FBO render pass. Metal 4 encoders do not implicitly order cross-encoder reads.
+
+Fix: at the start of every render encoder, encode
+
+```objc
+[gEncoder barrierAfterQueueStages:(MTLStageVertex | MTLStageFragment)
+                     beforeStages:(MTLStageVertex | MTLStageFragment)
+                visibilityOptions:MTL4VisibilityOptionDevice];
+```
+
+That makes the screen encoder's fragment sampling wait for the FBO encoder's
+writes and flushes caches. The window is now stable; the self-test and a real
+`CNE_METAL4_VERBOSE=1` run show a clean target/draw sequence. The readback path
+(`CNE_METAL4_READBACK=1`) is diagnostic only and perturbs timing; its compute
+copy can read black, so do not use it to judge normal rendering.
