@@ -898,6 +898,9 @@ class PlayState extends MusicBeatState
 	}
 
 	@:dox(hide) public override function createPost() {
+		#if cpp
+		funkin.backend.system.Main.setNativeFilterState(true);
+		#end
 		startCutscene("", cutscene, null, true);
 		super.createPost();
 
@@ -1060,6 +1063,9 @@ class PlayState extends MusicBeatState
 	}
 
 	public override function destroy() {
+		#if cpp
+		funkin.backend.system.Main.setNativeFilterState(false);
+		#end
 		scripts.call("destroy");
 		for(g in __cachedGraphics)
 			g.useCount--;

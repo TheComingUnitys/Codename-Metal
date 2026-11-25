@@ -63,6 +63,11 @@ class Main extends Sprite
 	#end
 
 	public static function preInit() {
+		#if cpp
+		try {
+			if (sys.FileSystem.exists('/tmp/cne-native-filterstate')) sys.FileSystem.deleteFile('/tmp/cne-native-filterstate');
+		} catch (e:Dynamic) {}
+		#end
 		funkin.backend.utils.NativeAPI.registerAsDPICompatible();
 		funkin.backend.system.CommandLineHandler.parseCommandLine(Sys.args());
 		funkin.backend.system.Main.fixWorkingDirectory();
@@ -250,4 +255,17 @@ class Main extends Sprite
 	public static function get_timeSinceFocus():Float {
 		return (FlxG.game.ticks - _tickFocused) / 1000;
 	}
+
+	#if cpp
+	// [cne-native] Tell the Metal 4 backend that the engine is in a filter-chain
+	// state (Freeplay / PlayState).  Those states render through FBO->FBO screen
+	// shaders whose native orientation needs the two-stage Y correction; the menu,
+	// transitions and cutscenes must keep the plain orientation.
+	public static function setNativeFilterState(on:Bool):Void {
+		try {
+			if (on) sys.io.File.saveContent('/tmp/cne-native-filterstate', '1');
+			else if (sys.FileSystem.exists('/tmp/cne-native-filterstate')) sys.FileSystem.deleteFile('/tmp/cne-native-filterstate');
+		} catch (e:Dynamic) {}
+	}
+	#end
 }

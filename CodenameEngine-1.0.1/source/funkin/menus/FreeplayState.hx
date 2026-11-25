@@ -111,8 +111,19 @@ class FreeplayState extends MusicBeatState
 	public var interpColor:FlxInterpolateColor;
 
 
+	override function destroy()
+	{
+		#if cpp
+		funkin.backend.system.Main.setNativeFilterState(false);
+		#end
+		super.destroy();
+	}
+
 	override function create()
 	{
+		#if cpp
+		funkin.backend.system.Main.setNativeFilterState(true);
+		#end
 		CoolUtil.playMenuSong();
 		songList = FreeplaySonglist.get();
 		songs = songList.songs;
@@ -560,4 +571,5 @@ class FreeplaySonglist {
 
 		return songList;
 	}
+
 }

@@ -949,7 +949,12 @@ class GLSLToMSL
 						i++;
 						continue;
 					case 'gl_FragCoord':
-						out.add('xlatIn.position');
+						// GLSL gl_FragCoord is bottom-left; Metal [[position]] is top-left.
+						// Mirror Y.  For the camera filter passes that use gl_FragCoord
+						// (gradient/light/fog/chromatic) openfl_TextureSize is the pass's
+						// source == target size, so this restores GL's origin.
+						out.add(isVertex ? 'xlatIn.position'
+							: 'float4(xlatIn.position.x, _mtl_u.openfl_TextureSize.y - xlatIn.position.y, xlatIn.position.z, xlatIn.position.w)');
 						i++;
 						continue;
 					case 'gl_InstanceID':
@@ -1528,7 +1533,8 @@ class GLSLToMSL
 			}
 			if (t.kind == Ident && t.text == 'gl_FragCoord')
 			{
-				out.add('xlatIn.position');
+				out.add(isVertex ? 'xlatIn.position'
+					: 'float4(xlatIn.position.x, _mtl_u.openfl_TextureSize.y - xlatIn.position.y, xlatIn.position.z, xlatIn.position.w)');
 				i++;
 				continue;
 			}

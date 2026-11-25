@@ -26,6 +26,9 @@ class TitleState extends MusicBeatState
 
 	override public function create():Void
 	{
+		#if cpp
+		funkin.backend.system.Main.setNativeFilterState(false);
+		#end
 		curWacky = FlxG.random.getObject(getIntroTextShit());
 
 		MusicBeatState.skipTransIn = true;
