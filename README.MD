@@ -83,7 +83,7 @@ Codename-Metal/
 - OS: macOS 26.6.2 (Apple Silicon / M3), `MACOSX_DEPLOYMENT_TARGET=11.0`
 - Haxe **4.3.7**, hxcpp **4.3.2**
 - Lime **8.3.2** (dev checkout) + this repository's patches (section 5.3)
-- bgfx API **v168** (Metal backend, static libraries; snapshot: bgfx `eebf568`, bx `57548da`, bimg `2217718`, 2026-11-13)
+- bgfx API **v172** (Metal backend, static libraries; snapshot: bgfx `3fe177f`, bx `b8ee10a`, bimg `38ceda5`, 2026-11-25)
 - Passing: main menu, cutscenes, freeplay, the full Dusttale flow, Winter Horrorland,
   pause menu; the original-engine shader corpus is fully prebuilt (`sourceCompile=0` for it),
   while mod shaders are translated at runtime on first use (the AOT cache intentionally

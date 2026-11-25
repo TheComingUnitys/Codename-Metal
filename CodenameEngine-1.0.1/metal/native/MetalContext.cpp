@@ -19,6 +19,7 @@ extern "C" void cne_metal4_force_upload_texture (int width, int height, const vo
 extern "C" void cne_metal4_force_upload_bgra (int width, int height, const void* data, int pitch);
 extern "C" int cne_metal4_app_init (void* layer, int width, int height);
 extern "C" void cne_metal4_app_frame_begin (void);
+extern "C" int cne_metal4_device_available (void);
 extern "C" void cne_metal4_app_frame_end (void);
 extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
 extern "C" void cne_metal4_app_shutdown (void);
@@ -821,15 +822,26 @@ namespace metal {
 		}
 		cne_mtl_note_bgfx_init_boundary ();
 
+		// [cne-auto] Pick the renderer from what the machine can run: Metal 4
+		// (macOS 26+ and a Metal 4 capable GPU) uses the native renderer, everything
+		// else stays on bgfx's Metal 2 backend.  CNE_METAL4_NATIVE=0/1 still forces a
+		// choice, for A/B testing and for machines where the probe is wrong.
+		int wantNative = cne_metal4_device_available ();
 		if (const char* m4n = std::getenv ("CNE_METAL4_NATIVE"))
 		{
-			if (m4n[0] == '1' && m4n[1] == '\0')
-			{
-				gMetal4Native = cne_metal4_app_init (layer, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight) != 0;
-				std::fprintf (stdout, "[cne-metal4] native renderer %s\n", gMetal4Native ? "enabled" : "unavailable");
-				std::fflush (stdout);
-			}
+			if (m4n[0] == '0' && m4n[1] == '\0') wantNative = 0;
+			else if (m4n[0] == '1' && m4n[1] == '\0') wantNative = 1;
 		}
+		if (wantNative)
+		{
+			gMetal4Native = cne_metal4_app_init (layer, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight) != 0;
+			std::fprintf (stdout, "[cne-metal4] native renderer %s (Metal 4 available)\n", gMetal4Native ? "enabled" : "unavailable");
+		}
+		else
+		{
+			std::fprintf (stdout, "[cne-metal4] native renderer skipped, using bgfx Metal 2 path\n");
+		}
+		std::fflush (stdout);
 
 		if (const char* m4 = std::getenv ("CNE_METAL4_CLEAR"))
 		{

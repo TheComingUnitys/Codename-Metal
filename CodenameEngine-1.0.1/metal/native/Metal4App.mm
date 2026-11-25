@@ -775,6 +775,21 @@ static int InitDeviceCommon(int width, int height)
 	return 1;
 }
 
+// [cne-auto] Can this machine actually run the Metal 4 command API?  That is a
+// macOS 26+ *and* a GPU-capability question (MTLGPUFamilyMetal4), so ask the device
+// rather than the OS version alone.  MetalContext uses this to pick the native
+// renderer automatically and fall back to bgfx's Metal 2 path otherwise.
+extern "C" int cne_metal4_device_available(void)
+{
+	if (@available (macOS 26.0, *))
+	{
+		id<MTLDevice> dev = MTLCreateSystemDefaultDevice ();
+		if (dev == nil) return 0;
+		return [dev supportsFamily:MTLGPUFamilyMetal4] ? 1 : 0;
+	}
+	return 0;
+}
+
 extern "C" int cne_metal4_app_init(void* layerPtr, int width, int height)
 {
 	gLayer = (__bridge CAMetalLayer*)layerPtr;
