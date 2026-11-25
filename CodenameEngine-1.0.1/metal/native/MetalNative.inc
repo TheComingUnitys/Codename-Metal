@@ -22,12 +22,62 @@
 	extern "C" void cne_metal4_app_frame_begin (void);
 	extern "C" void cne_metal4_app_frame_end (void);
 	extern "C" void cne_metal4_app_target (int textureId, int width, int height, int isScreen, float r, float g, float b, float a, int clearColor);
+	extern "C" void cne_metal4_app_clear (int color, int depth, int stencil, float r, float g, float b, float a);
 	extern "C" void cne_metal4_app_viewport (int x, int y, int w, int h);
 	extern "C" void cne_metal4_app_scissor (int enabled, int x, int y, int w, int h);
 	extern "C" void cne_metal4_app_texture (int id, int w, int h, int isRT, const void* pixels, int format);
 	extern "C" void cne_metal4_app_buffer (int id, const void* bytes, int size, int isIndex);
 	extern "C" int cne_metal4_app_program (int id, const void* vsData, int vsSize, int vsIsMetallib, const void* fsData, int fsSize, int fsIsMetallib, const int* attribLocations, int attribCount);
+	extern "C" void cne_metal4_app_tex_filter (int id, int nearest);
 	extern "C" void cne_metal4_app_draw (int program, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, const int* bufferIds, const int* strides, int bufferCount, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, const int* textureIds, int textureCount, const int* constantLocations, const int* constantComponents, const float* constantValues, int constantCount, const void* vsUniformBytes, int vsUniformSize, const void* fsUniformBytes, int fsUniformSize, const void* indexBytes, int indexSize, int indexType, int indexCount, int baseVertex, int vertexCount, int primitive);
+
+	// ---------------------------------------------------------------- screen-last
+	//
+	// The engine submits its offscreen filter chain and the screen composite in an
+	// order that is not dependency-safe (the bgfx path has ApplyFrameViewOrder for
+	// exactly this).  Defer every draw whose target is the screen, then replay them
+	// at frame end, after all offscreen passes, preserving their order.
+	struct PendingScreenDraw
+	{
+		int program = 0;
+		int blendEnabled = 0, srcRGB = 0, dstRGB = 0, srcA = 0, dstA = 0;
+		std::vector<int> bufferIds, strides;
+		std::vector<std::vector<uint8_t>> bufferBytes;
+		std::vector<int> attribLoc, attribBuf, attribSize, attribType, attribNorm, attribOff;
+		std::vector<int> textureIds;
+		std::vector<int> constantLoc, constantComp;
+		std::vector<float> constantVals;
+		std::vector<uint8_t> vsUniform, fsUniform, indexBytes;
+		int indexType = 0, indexCount = 0, baseVertex = 0, vertexCount = 0, primitive = 0;
+		int viewport[4] = {0,0,0,0};
+		int scissorEnabled = 0, scissor[4] = {0,0,0,0};
+		bool vflipped = false;
+	};
+	static std::vector<PendingScreenDraw> gPendingScreenDraws;
+	static float gPendingScreenClear[4] = {0.f, 0.f, 0.f, 1.f};
+	// [cne-native] Set while the Haxe side is in Freeplay/PlayState; those states
+	// need the two-stage Y correction, menus/cutscenes do not.
+	static bool gFilterStateFlip = false;
+	// First large render target sampled in a frame is the main camera canvas; the
+	// other large RTs are the UI/player/front cameras. Only those need the V mirror.
+	static int gFrameMainTex = -1;
+	// Last frame's main screen layer (survives FlushPendingScreenDraws so the
+	// readback can tell Freeplay (129) from gameplay (35x) and dump the right FBO).
+	static int gLastScreenMain = -1;
+	// [cne-countdown] Player-order index of the RT-sampling screen layers (camera
+	// composites) and the count from the previous frame.  camHUD2 is the last camera
+	// on the stages that move the countdown into it; its FBO starts upright while
+	// camHUD's starts mirrored, so the uniform mode-1 mirror over-rotates it.
+	static int gScreenRtIndex = 0;
+	static int gPrevScreenRtCount = 0;
+
+	namespace metal {
+	void DeferScreenClear (float r, float g, float b, float a)
+	{
+		gPendingScreenClear[0] = r; gPendingScreenClear[1] = g;
+		gPendingScreenClear[2] = b; gPendingScreenClear[3] = a;
+	}
+	}
 
 	/** GL -> Metal blend factor (the enum values differ). */
 	static int Metal4BlendFactor (int gl)
@@ -98,6 +148,7 @@
 	static bool Metal4Draw (int primitive, int count, int indexType, int byteOffset, int instanceCount, bool indexed, int vertexCount)
 	{
 		if (!cne_metal4_app_active ()) return false;
+
 
 		auto pit = programs.find (MetalContext::state.currentProgram);
 		if (pit == programs.end ()) return false;
@@ -230,52 +281,122 @@
 		}
 		int attribLoc[16], attribBuf[16], attribSize[16], attribType[16], attribNorm[16], attribOff[16];
 		int bufferIds[8], strides[8]; int bufferCount = 0, attribCount = 0;
+		bool provided[32] = {false};
 		for (auto& entry : vao.attribs)
 		{
 			VertexAttrib& a = entry.second;
 			if (!a.enabled || attribCount >= 16) continue;
 			auto mslIt = byGl.find (entry.first);
 			if (mslIt == byGl.end ()) continue;
-			if (isConstantSlot (mslIt->second.slot)) continue;
+			const int mslLocation = mslIt->second.slot;
+			// Alpha/colour attributes are only "constant" when the engine did NOT
+			// supply a per-vertex stream for them.  The 8-attribute display shader
+			// batches alpha/colour in a separate VBO (stride 4/16); forcing the neutral
+			// constant ignored it, which made fades/cutscene black curtains and the
+			// Freeplay list opaque black.
+			if (isConstantSlot (mslLocation) && a.buffer == 0) continue;
+			// Deduplicate by (buffer, stride), not buffer alone: OpenFL reuses one GL buffer
+			// for the alpha (float1, stride 4) and colour (vec4, stride 16) arrays.  Keying
+			// only on the id made the colour vec4 use the alpha stride, so the shader read
+			// four consecutive vertices as R,G,B,A (rainbow ring / green UI wash).
 			int bufferSlot = -1;
-			for (int i = 0; i < bufferCount; ++i) if (bufferIds[i] == a.buffer) { bufferSlot = i; break; }
+			for (int i = 0; i < bufferCount; ++i)
+				if (bufferIds[i] == a.buffer && strides[i] == a.stride) { bufferSlot = i; break; }
 			if (bufferSlot < 0 && bufferCount < 8) { bufferSlot = bufferCount; bufferIds[bufferCount] = a.buffer; strides[bufferCount] = a.stride; ++bufferCount; }
 			if (bufferSlot < 0) continue;
-			const int mslLocation = mslIt->second.slot;
 			attribLoc[attribCount] = mslLocation;
 			attribBuf[attribCount] = bufferSlot;
 			attribSize[attribCount] = a.size; // match the actual VAO layout (vec2/vec3)
 			attribType[attribCount] = (a.type == 0x1401 /*GL_UNSIGNED_BYTE*/) ? 0 : 1;
 			attribNorm[attribCount] = a.normalized ? 1 : 0;
 			attribOff[attribCount] = (int)a.offset;
+			provided[mslLocation] = true;
 			++attribCount;
 		}
-		bool usedMsl[32] = {false};
-		for (int i = 0; i < attribCount; ++i) if (attribLoc[i] >= 0 && attribLoc[i] < 32) usedMsl[attribLoc[i]] = true;
 		int constLoc[8], constComp[8];
 		float constVals[32];
 		int constCount = 0;
+		bool constAdded[32] = {false};
+		static const bool eventLogColor = std::getenv ("CNE_METAL4_EVENTS") != nullptr;
 		auto addConst = [&] (int slot, int comps, float a, float b, float c, float d) {
-			if (slot < 0 || constCount >= 8) return;
+			if (slot < 0 || slot >= 32 || constCount >= 8 || constAdded[slot]) return;
 			constLoc[constCount] = slot; constComp[constCount] = comps;
 			constVals[constCount*4+0]=a; constVals[constCount*4+1]=b; constVals[constCount*4+2]=c; constVals[constCount*4+3]=d;
-			usedMsl[slot] = true; ++constCount;
+			constAdded[slot] = true; ++constCount;
 		};
-		for (int slot : alphaSlots) addConst (slot, 1, 1.f, 0.f, 0.f, 1.f);
-		for (int slot : multSlots) addConst (slot, 4, 1.f, 1.f, 1.f, 1.f);
-		for (int slot : offsetSlots) addConst (slot, 4, 0.f, 0.f, 0.f, 0.f);
+		// Generic attributes (glVertexAttrib*) carry the per-object alpha/colour and
+		// clip rectangles.  Use their real values; the old code overrode them with
+		// 1/white/0, so a black overlay with alpha 0 became an opaque black screen.
+		auto isColorConstantSlot = [&] (int slot) {
+			for (int s : multSlots) if (s == slot) return true;
+			for (int s : offsetSlots) if (s == slot) return true;
+			return false;
+		};
 		for (auto& ga : mtl_textures_detail::genericAttribs)
 		{
 			if (constCount >= 8) break;
-			int msl = -1; int comps = 4;
 			auto mslIt = byGl.find (ga.first);
-			if (mslIt != byGl.end ()) { msl = mslIt->second.slot; comps = mslIt->second.comps; }
-			if (msl < 0 || (msl < 32 && usedMsl[msl])) continue;
-			if (msl < 32) usedMsl[msl] = true;
-			constLoc[constCount] = msl;
-			constComp[constCount] = comps;
-			for (int k = 0; k < 4; ++k) constVals[constCount * 4 + k] = ga.second.integer ? (float)ga.second.u[k] : ga.second.f[k];
-			++constCount;
+			if (mslIt == byGl.end ()) continue;
+			const int msl = mslIt->second.slot;
+			const int comps = mslIt->second.comps;
+			if (msl < 0 || msl >= 32 || provided[msl] || constAdded[msl]) continue;
+			// [cne-fillcolor] Use the REAL colour multiplier/offset the engine set with
+			// glVertexAttrib4f.  The old code replaced them with white/0 because a white
+			// loading circle once came out rainbow-tinted (that was the stride-aliasing
+			// bug, fixed separately).  Forcing them neutral is what turned every solid
+			// fill - including the title's white flash - into its texture's colour.
+			if (isColorConstantSlot (msl)) {
+				float v[4];
+				for (int k = 0; k < 4; ++k) v[k] = ga.second.integer ? (float)ga.second.u[k] : ga.second.f[k];
+				if (eventLogColor)
+				{
+					static int sColorUseLog = 0;
+					if (sColorUseLog < 16)
+					{
+						std::fprintf (stderr, "[cne-metal4] coloruse prog=%d slot=%d gl=%d val=%.3f,%.3f,%.3f,%.3f\n",
+							MetalContext::state.currentProgram, msl, ga.first, v[0], v[1], v[2], v[3]);
+						++sColorUseLog;
+					}
+				}
+				addConst (msl, comps, v[0], v[1], v[2], v[3]);
+				continue;
+			}
+			float v[4];
+			for (int k = 0; k < 4; ++k) v[k] = ga.second.integer ? (float)ga.second.u[k] : ga.second.f[k];
+			addConst (msl, comps, v[0], v[1], v[2], v[3]);
+		}
+		// Neutral fallbacks only for alpha/colour slots neither stream provides.
+		for (int slot : alphaSlots) if (slot >= 0 && !provided[slot] && !constAdded[slot]) addConst (slot, 1, 1.f, 0.f, 0.f, 1.f);
+		for (int slot : multSlots) if (slot >= 0 && !provided[slot] && !constAdded[slot]) addConst (slot, 4, 1.f, 1.f, 1.f, 1.f);
+		for (int slot : offsetSlots) if (slot >= 0 && !provided[slot] && !constAdded[slot]) addConst (slot, 4, 0.f, 0.f, 0.f, 0.f);
+		// [cne-events] Log the constants a screen shape/fill actually submits: a flash that
+		// comes out black is either a zero multiplier or a slot that was skipped.
+		{
+			static const bool shapeLog = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_EVENTS");
+				return v != nullptr && v[0] != '0' && v[0] != '\0';
+			} ();
+			// Dedupe by value instead of capping: the flash happens hundreds of frames
+			// after startup, so a first-N-lines cap would never reach it.
+			static std::string lastShape;
+			if (shapeLog && MetalContext::state.currentFramebuffer == 0
+				&& MetalContext::state.currentProgram == 11)
+			{
+				std::string key;
+				char b[96];
+				for (int i = 0; i < constCount; ++i)
+				{
+					std::snprintf (b, sizeof (b), " s%d(%dc)=%.2f,%.2f,%.2f,%.2f",
+						constLoc[i], constComp[i], constVals[i*4+0], constVals[i*4+1], constVals[i*4+2], constVals[i*4+3]);
+					key += b;
+				}
+				if (key != lastShape)
+				{
+					lastShape = key;
+					std::fprintf (stderr, "[cne-ev] shape prog=11 consts=%d%s f=%u\n", constCount, key.c_str (), metal::gFrameIndex);
+				}
+			}
 		}
 		for (int i = 0; i < bufferCount; ++i)
 		{
@@ -299,15 +420,97 @@
 		};
 		static std::set<int> sNativeTexCreated;
 		static std::map<int, uint32_t> sNativeTexVersion;
+		// [cne-shape] OpenFL's fill/graphics shader computes
+		// offset + (texel / texel.a) * colorMultiplier, so a solid fill is expected to
+		// sample a WHITE 1x1 while the colour rides on the multiplier.  The GL binding
+		// we track still points at the last solid texture (a BLACK 1x1), which made the
+		// title white flash render as a black veil.  For shape draws (no hasTransform
+		// uniform) sampling a 1x1 texture, point the sampler at our own white 1x1.
+		bool programHasTransform = false;
+		for (auto& uu : program.uniforms) if (uu.name == "hasTransform") { programHasTransform = true; break; }
+		// Default ON now that the real colour multiplier is used: a solid fill's colour
+		// rides on the multiplier, so its 1x1 texture must be white or the product stays
+		// black (that is exactly what hid the title's white flash).  CNE_METAL4_SHAPE_WHITE=0
+		// turns it back off for A/B testing.
+		static const bool shapeWhite = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL4_SHAPE_WHITE");
+			return v == nullptr || (v[0] != '0' && v[0] != '\0');
+		} ();
+		static int sWhiteTexId = 0;
+		if (shapeWhite && !programHasTransform && sWhiteTexId == 0)
+		{
+			sWhiteTexId = -7777;
+			static const uint8_t wp[4] = {255, 255, 255, 255};
+			cne_metal4_app_texture (sWhiteTexId, 1, 1, 0, wp, 0x80E1);
+		}
+		// [cne-ev] Resolve what a fill actually samples and whether its colour comes
+		// from the texture or from the multiplier.  The generated MSL is
+		//   if (hasColorTransform) color = clamp(offset + texel/texel.a * mult)
+		//   else                   color = texel * alpha
+		// so a fill that comes out the wrong colour is either the wrong texel (the
+		// texture carries the colour) or a missing multiplier (hasColorTransform).
+		int diagHct = -1;
+		for (auto& uu : program.uniforms)
+			if (uu.name == "openfl_HasColorTransform" && uu.value.size () >= 4)
+			{
+				int hv = 0; std::memcpy (&hv, uu.value.data (), 4); diagHct = (hv != 0) ? 1 : 0; break;
+			}
+		// [cne-shape] The white 1x1 may only stand in for the fill colour when the
+		// shader actually multiplies by the colour multiplier.  With
+		// openfl_HasColorTransform off the fragment is `texel * alpha`, i.e. the texel
+		// *is* the colour - substituting white there turned every black camera fade
+		// (freeplay -> playstate) into a white flash.
+		const bool colorFromMultiplier = (diagHct == 1);
+		int diagTex = 0, diagSubst = 0; uint32_t diagTexel = 0;
 		for (auto& u : program.uniforms)
 		{
 			if (u.isSampler)
 			{
 				int tex = FastBoundTextureId (u.textureUnit);
+				if (u.textureUnit == 0)
+				{
+					diagTex = tex; diagSubst = 0; diagTexel = 0;
+					auto dt = textures.find (tex);
+					if (dt != textures.end () && dt->second.width == 1 && dt->second.height == 1
+						&& dt->second.pixels.size () >= 4)
+						std::memcpy (&diagTexel, dt->second.pixels.data (), 4);
+				}
+				if (shapeWhite && colorFromMultiplier && u.textureUnit == 0 && sWhiteTexId != 0)
+				{
+					auto st = textures.find (tex);
+					if (st != textures.end () && st->second.width == 1 && st->second.height == 1)
+					{
+						// Bind the built-in white 1x1 directly and skip the registry path
+						// below: that path is what fills textureIds, and it only does so for
+						// ids present in `textures`.  The white texture has no GL id, so the
+						// old code (assign tex then fall into the lookup) found nothing,
+						// left textureCount at 0 and the draw sampled an *unbound* slot -
+						// texel/texel.a came out 0/0 and the flash disappeared entirely
+						// (neither white nor the old black veil).
+						while (textureCount <= u.textureUnit && textureCount < 16) textureIds[textureCount++] = 0;
+						if (u.textureUnit < 16) textureIds[u.textureUnit] = sWhiteTexId;
+						diagSubst = 1;
+						continue;
+					}
+				}
 				auto t = textures.find (tex);
 				if (t != textures.end () && t->second.width > 0)
 				{
-					const bool rt = t->second.isRenderTarget || textureIsAttachment (tex);
+					const bool attached = textureIsAttachment (tex);
+					// [cne-texdirty] `isRenderTarget` means "attached to an FBO", not
+					// "only the GPU writes it".  hxvlc creates its video texture with
+					// optimizeForRenderToTexture=true (an unused FBO) and still uploads
+					// every frame from the CPU.  Treat a texture as GPU-backed only once
+					// its framebuffer has actually been bound, otherwise the video
+					// uploads are skipped and the cutscene stays black.
+					const bool gpuBacked = (t->second.isRenderTarget || attached)
+						&& (t->second.gpuDrawn || !t->second.hasData);
+					const bool rt = gpuBacked;
+					if (!rt && (t->second.isRenderTarget || attached) && t->second.width > 1000) {
+						static int sCpuRtLog = 0;
+						if (sCpuRtLog < 12) { std::fprintf (stderr, "[cne-metal4] rt-cpu tex=%d %dx%d hasData=%d gpuDrawn=%d uploadCount=%u\n", tex, t->second.width, t->second.height, t->second.hasData ? 1 : 0, t->second.gpuDrawn ? 1 : 0, t->second.uploadCount); ++sCpuRtLog; }
+					}
 					if (rt) samplesRenderTarget = true;
 					const bool created = sNativeTexCreated.find (tex) != sNativeTexCreated.end ();
 					bool dirty = false;
@@ -333,6 +536,35 @@
 			}
 			const uint32_t end = u.offset + (uint32_t)u.value.size ();
 			if (end > uniformSize) uniformSize = end;
+		}
+		// [cne-ev] One line per distinct fill resolution, so a title flash and a
+		// freeplay->playstate fade can be compared directly.
+		{
+			static const bool fillLog = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_EVENTS");
+				return v != nullptr && v[0] != '0' && v[0] != '\0';
+			} ();
+			if (fillLog && MetalContext::state.currentFramebuffer == 0 && !programHasTransform)
+			{
+				static std::set<std::string> seen;
+				std::string key;
+				char b[96];
+				std::snprintf (b, sizeof (b), "prog=%d hct=%d tex=%d texel=%08x subst=%d", MetalContext::state.currentProgram, diagHct, diagTex, diagTexel, diagSubst);
+				key = b;
+				for (int i = 0; i < constCount; ++i)
+				{
+					// Skip the 1-component alpha slot: a fade changes it every frame, so
+					// every frame would be a new key and the cap would be exhausted
+					// before the transition being diagnosed is ever reached.
+					if (constComp[i] == 1) continue;
+					std::snprintf (b, sizeof (b), " s%d(%dc)=%.2f,%.2f,%.2f,%.2f",
+						constLoc[i], constComp[i], constVals[i*4+0], constVals[i*4+1], constVals[i*4+2], constVals[i*4+3]);
+					key += b;
+				}
+				if (seen.size () < 48 && seen.insert (key).second)
+					std::fprintf (stderr, "[cne-ev] fill %s f=%u\n", key.c_str (), metal::gFrameIndex);
+			}
 		}
 		static int sUniformLog = 0;
 		if (sUniformLog < 12)
@@ -529,6 +761,22 @@
 			}
 			if (bytes.size () < 64) return;
 			float* m = (float*)bytes.data ();
+			// [cne-events] Twice a second, log the per-draw transform of screen draws:
+			// m0/m5 are the pixel->clip scale and m12/m13 the translation, so an overlay
+			// whose sprites suddenly grow or move shows up here even though the draw list
+			// (program/texture/count) is unchanged.
+			{
+				static const bool eventLog = [] ()
+				{
+					const char* v = std::getenv ("CNE_METAL4_EVENTS");
+					return v != nullptr && v[0] != '0' && v[0] != '\0';
+				} ();
+				if (eventLog && MetalContext::state.currentFramebuffer == 0 && (metal::gFrameIndex % 30u) == 0u)
+				{
+					std::fprintf (stderr, "[cne-ev] mtx prog=%d m0=%.6f m5=%.6f tx=%.3f ty=%.3f\n",
+						MetalContext::state.currentProgram, m[0], m[5], m[12], m[13]);
+				}
+			}
 			// Degenerate scale (only translation survived the override) is as unusable as an
 			// all-zero matrix for 2D vertices.
 			const float scaleSum = std::fabs (m[0]) + std::fabs (m[1]) + std::fabs (m[5]) + std::fabs (m[10]);
@@ -558,7 +806,137 @@
 				++sFixLog;
 			}
 		};
+		// Freeplay/PlayState: camera canvases (tvScreen/frontCam, world/HUD) are
+		// rendered into 2764x1554 FBOs and then composited.  Their Y orientation
+		// differs from the backbuffer, so the sampling draw's texture V is mirrored.
+		// Keep the handoff's rule: the first large RT sampled in the frame is the main
+		// camera layer (not mirrored), subsequent camera layers are mirrored.  This is
+		// the only scheme that has produced upright text/UI on this path.
+		std::vector<uint8_t> vFlippedBytes;
+		int vFlipBufferId = -1;
+		if (gFilterStateFlip)
+		{
+			const bool screenDraw = (MetalContext::state.currentFramebuffer == 0);
+			bool subSizeRt = false;
+			bool hasLargeRt = false;
+			for (int i = 0; i < textureCount; ++i)
+			{
+				auto tt = textures.find (textureIds[i]);
+				if (tt == textures.end () || tt->second.width <= 1000 || tt->second.height <= 500) continue;
+				if (!tt->second.isRenderTarget && !textureIsAttachment (textureIds[i])) continue;
+				hasLargeRt = true;
+				if (gFrameMainTex < 0) gFrameMainTex = textureIds[i];
+				else if (textureIds[i] != gFrameMainTex) { subSizeRt = true; break; }
+			}
+			auto tcl = program.attributeLocations.find ("openfl_TextureCoord");
+			// Diagnostic: CNE_METAL4_VFLIP_INVERT=1 mirrors the *main* layer instead of
+			// the other camera layers.  Lets a tester find the correct per-layer
+			// orientation without a rebuild.
+			static const bool invertVFlip = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_VFLIP_INVERT");
+				return v != nullptr && v[0] != '0' && v[0] != '\0';
+			} ();
+			// CNE_METAL4_ORIENT=1: mirror every RT-sampling pass/layer (makes a chain's
+			// orientation independent of its pass count). =2: mirror none.  Unset/0 keeps
+			// the handoff main-layer rule.  These modes exist because Freeplay's tvScreen
+			// (4 passes) and gameplay's world (10 passes) end up with opposite FBO parity.
+			static const int orientMode = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_ORIENT");
+				return v != nullptr ? std::atoi (v) : 1;   // 1 = uniform mirror (the orientation that renders Freeplay/gameplay upright)
+			} ();
+			bool flip = subSizeRt;
+			if (orientMode == 1) flip = true;
+			else if (orientMode == 2) flip = false;
+			else if (invertVFlip) flip = !flip;
+			if (screenDraw && hasLargeRt)
+				++gScreenRtIndex;
+			// Only mirror draws that cover the whole render target (camera filter
+			// passes and the final screen composite).  A cached title-card/flash sprite
+			// also samples a large RT but covers only its own bounds; mirroring it
+			// flipped the text/photo while the vertex-coloured gradient stayed upright.
+			bool fullTargetQuad = normalizedPositions;
+			if (!fullTargetQuad && positionSlot >= 0)
+			{
+				float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+				bool any = false;
+				for (int i = 0; i < attribCount; ++i)
+				{
+					if (attribLoc[i] != positionSlot || attribBuf[i] < 0 || attribBuf[i] >= bufferCount) continue;
+					auto pb = buffers.find (bufferIds[attribBuf[i]]);
+					if (pb == buffers.end ()) break;
+					const int pstride = (int)(strides[attribBuf[i]] > 0 ? strides[attribBuf[i]] : 0);
+					if (pstride <= 0) break;
+					int pverts = (int)(pb->second.bytes.size () / (size_t)pstride);
+					if (pverts > 16) pverts = 16;
+					for (int v = 0; v < pverts; ++v)
+					{
+						const size_t o = (size_t)attribOff[i] + (size_t)v * (size_t)pstride;
+						if (o + sizeof (float) * 2 > pb->second.bytes.size ()) break;
+						const float* pp = reinterpret_cast<const float*> (pb->second.bytes.data () + o);
+						minX = std::min (minX, pp[0]); maxX = std::max (maxX, pp[0]);
+						minY = std::min (minY, pp[1]); maxY = std::max (maxY, pp[1]);
+						any = true;
+					}
+					break;
+				}
+				if (any)
+				{
+					int tw = 0, th = 0;
+					auto fb = framebuffers.find (MetalContext::state.currentFramebuffer);
+					if (fb != framebuffers.end ()) { tw = fb->second.width; th = fb->second.height; }
+					if (tw <= 0 || th <= 0) { tw = (int)MetalContext::state.backbufferWidth; th = (int)MetalContext::state.backbufferHeight; }
+					if ((maxX - minX) >= 0.9f * (float)tw && (maxY - minY) >= 0.9f * (float)th)
+						fullTargetQuad = true;
+				}
+			}
+			if (flip && fullTargetQuad && tcl != program.attributeLocations.end ())
+			{
+				auto ait = vao.attribs.find (tcl->second);
+				if (ait != vao.attribs.end () && ait->second.enabled && ait->second.size >= 2
+					&& ait->second.type == 0x1406 /*GL_FLOAT*/)
+				{
+					auto b = buffers.find (ait->second.buffer);
+					const int stride = (int)ait->second.stride;
+					const int off = (int)ait->second.offset + 4; // second float = V
+					if (b != buffers.end () && stride > 0 && off + 4 <= stride && (int)b->second.bytes.size () >= stride)
+					{
+						vFlippedBytes = b->second.bytes;
+						const int verts = (int)vFlippedBytes.size () / stride;
+						for (int v = 0; v < verts; ++v)
+						{
+							float* p = reinterpret_cast<float*> (vFlippedBytes.data () + v * stride + off);
+							*p = 1.0f - *p;
+						}
+						vFlipBufferId = ait->second.buffer;
+						static int sVFlipLog = 0;
+						if (sVFlipLog < 12) { std::fprintf (stderr, "[cne-metal4] vflip prog=%d buf=%d stride=%d off=%d verts=%d\n", MetalContext::state.currentProgram, vFlipBufferId, stride, off, verts); ++sVFlipLog; }
+					}
+				}
+			}
+		}
+
+		if (vFlipBufferId >= 0 && !vFlippedBytes.empty ())
+			cne_metal4_app_buffer (vFlipBufferId, vFlippedBytes.data (), (int)vFlippedBytes.size (), 0);
+
 		fixMatrix (vsBytes);
+
+		// Diagnostic: one line per (program, FBO) so menu and Freeplay offscreen
+		// projection signs can be compared without the early-menu log caps hiding them.
+		if (MetalContext::state.currentFramebuffer != 0 && vsBytes.size () >= 32)
+		{
+			static std::set<std::pair<int,int>> sFboSeen;
+			static int sFboLog = 0;
+			auto key = std::make_pair (MetalContext::state.currentProgram, (int)MetalContext::state.currentFramebuffer);
+			if (sFboLog < 60 && sFboSeen.insert (key).second)
+			{
+				const float* m = reinterpret_cast<const float*> (vsBytes.data ());
+				std::fprintf (stderr, "[cne-metal4] fbodraw prog=%d fb=%d m5=%.5f m13=%.5f tex0=%d\n",
+					key.first, key.second, m[5], m[13], textureCount > 0 ? textureIds[0] : -1);
+				++sFboLog;
+			}
+		}
 
 		static int sRtDrawLog = 0;
 		if (samplesRenderTarget && sRtDrawLog < 16)
@@ -599,7 +977,119 @@
 				attribCount > 2 ? attribLoc[2] : -1);
 			++sRtDrawLog;
 		}
+		// Defer screen draws to frame end (screen-last).  The offscreen filter chain
+		// may be submitted after the composite in the engine's call order; drawing the
+		// screen immediately made it sample a stale/cleared FBO (Freeplay black with
+		// occasional content).  Replay after every offscreen pass instead.
 		const MetalContext::State& st = MetalContext::state;
+		if (MetalContext::state.currentFramebuffer == 0)
+		{
+			PendingScreenDraw p;
+			p.program = MetalContext::state.currentProgram;
+			p.blendEnabled = st.blendEnabled ? 1 : 0;
+			p.srcRGB = Metal4BlendFactor (st.blendSrcRGB);
+			p.dstRGB = Metal4BlendFactor (st.blendDstRGB);
+			p.srcA = Metal4BlendFactor (st.blendSrcAlpha);
+			p.dstA = Metal4BlendFactor (st.blendDstAlpha);
+			for (int i = 0; i < bufferCount; ++i)
+			{
+				p.bufferIds.push_back (bufferIds[i]);
+				p.strides.push_back (strides[i]);
+				auto b = buffers.find (bufferIds[i]);
+				if (bufferIds[i] == vFlipBufferId && !vFlippedBytes.empty ())
+					p.bufferBytes.push_back (vFlippedBytes);
+				else
+					p.bufferBytes.push_back (b != buffers.end () ? b->second.bytes : std::vector<uint8_t> ());
+			}
+			for (int i = 0; i < attribCount; ++i)
+			{
+				p.attribLoc.push_back (attribLoc[i]); p.attribBuf.push_back (attribBuf[i]);
+				p.attribSize.push_back (attribSize[i]); p.attribType.push_back (attribType[i]);
+				p.attribNorm.push_back (attribNorm[i]); p.attribOff.push_back (attribOff[i]);
+			}
+			for (int i = 0; i < textureCount; ++i) p.textureIds.push_back (textureIds[i]);
+			for (int i = 0; i < constCount; ++i)
+			{
+				p.constantLoc.push_back (constLoc[i]); p.constantComp.push_back (constComp[i]);
+				for (int k = 0; k < 4; ++k) p.constantVals.push_back (constVals[i * 4 + k]);
+			}
+			p.vsUniform = vsBytes; p.fsUniform = fsBytes;
+			if (indexBytes != nullptr && indexSize > 0)
+				p.indexBytes.assign ((const uint8_t*)indexBytes, (const uint8_t*)indexBytes + indexSize);
+			p.indexType = indexType; p.indexCount = count; p.baseVertex = 0;
+			p.vertexCount = vertexCount; p.primitive = primitive;
+			for (int k = 0; k < 4; ++k)
+			{
+				p.viewport[k] = st.viewport[k]; p.scissor[k] = st.scissor[k];
+			}
+			p.scissorEnabled = st.scissorEnabled ? 1 : 0;
+			p.vflipped = (vFlipBufferId >= 0);
+			// Mirror the full-screen composite sampling a full-screen FBO (the FBO
+			// content itself was mirrored above).  Video/Rt textures smaller than the
+			// backbuffer (1920x1080 cutscene) are left alone.
+			// [cne-dump] Full description of every distinct screen draw (CNE_METAL4_DRAWLOG=1).
+			// Deduped by program/layout/buffer bytes so a static UI collapses to one line.
+			{
+				static const bool dumpLog = [] ()
+				{
+					const char* v = std::getenv ("CNE_METAL4_DRAWLOG");
+					return v != nullptr && v[0] != '0' && v[0] != '\0';
+				} ();
+				static std::string lastDump;
+				static int sDumpCount = 0;
+				// Only capture a draw whose single-component alpha is mid-fade: that is the
+				// flash/fade overlay.  Static UI (alpha 1) and the intro text churn would
+				// otherwise exhaust the budget long before the title transition.
+				bool midFade = false;
+				for (int i = 0; i < constCount; ++i)
+					if (constComp[i] == 1 && constVals[i*4+0] > 0.005f && constVals[i*4+0] < 0.995f) midFade = true;
+				if (dumpLog && midFade && sDumpCount < 80)
+				{
+					std::string key;
+					char b[96];
+					std::snprintf (b, sizeof (b), "p%d t%d b%d a%d c%d n%d", p.program,
+						(int)p.textureIds.size (), (int)p.bufferIds.size (), (int)p.attribLoc.size (),
+						(int)p.constantLoc.size (), p.indexCount);
+					key = b;
+					for (auto& bb : p.bufferBytes)
+					{
+						std::snprintf (b, sizeof (b), "/%zu:", bb.size ());
+						key += b;
+						for (size_t i = 0; i < bb.size () && i < 24; ++i) { std::snprintf (b, sizeof (b), "%02x", bb[i]); key += b; }
+					}
+					for (int i = 0; i < constCount; ++i)
+					{
+						std::snprintf (b, sizeof (b), "c%d=%.2f,%.2f,%.2f,%.2f", constLoc[i],
+							constVals[i*4+0], constVals[i*4+1], constVals[i*4+2], constVals[i*4+3]);
+						key += b;
+					}
+					if (key != lastDump)
+					{
+						lastDump = key;
+						++sDumpCount;
+						std::fprintf (stderr, "[cne-ev] dump f=%u prog=%d tex=%d buffers=%d attribs=%d consts=%d idxCount=%d idxType=%d verts=%d prim=%d\n",
+							metal::gFrameIndex, p.program, (int)p.textureIds.size (), (int)p.bufferIds.size (),
+							(int)p.attribLoc.size (), (int)p.constantLoc.size (), p.indexCount, p.indexType, p.vertexCount, p.primitive);
+						std::fprintf (stderr, "  tex:"); for (int t : p.textureIds) std::fprintf (stderr, " %d", t); std::fprintf (stderr, "\n");
+						for (size_t i = 0; i < p.bufferIds.size (); ++i)
+						{
+							std::fprintf (stderr, "  buf%zu id=%d stride=%d size=%zu:", i, p.bufferIds[i], p.strides[i], p.bufferBytes[i].size ());
+							for (size_t k = 0; k < p.bufferBytes[i].size () && k < 32; ++k) std::fprintf (stderr, " %02x", p.bufferBytes[i][k]);
+							std::fprintf (stderr, "\n");
+						}
+						for (size_t i = 0; i < p.attribLoc.size (); ++i)
+							std::fprintf (stderr, "  attr loc=%d buf=%d off=%d size=%d type=%d norm=%d\n",
+								p.attribLoc[i], p.attribBuf[i], p.attribOff[i], p.attribSize[i], p.attribType[i], p.attribNorm[i]);
+						for (int i = 0; i < constCount; ++i)
+							std::fprintf (stderr, "  const slot=%d comps=%d val=%.3f,%.3f,%.3f,%.3f\n",
+								constLoc[i], constComp[i], constVals[i*4+0], constVals[i*4+1], constVals[i*4+2], constVals[i*4+3]);
+					}
+				}
+			}
+			gPendingScreenDraws.push_back (std::move (p));
+			return true;
+		}
+
 		cne_metal4_app_draw (MetalContext::state.currentProgram, st.blendEnabled ? 1 : 0,
 			Metal4BlendFactor (st.blendSrcRGB), Metal4BlendFactor (st.blendDstRGB),
 			Metal4BlendFactor (st.blendSrcAlpha), Metal4BlendFactor (st.blendDstAlpha),
@@ -613,6 +1103,100 @@
 		return true;
 	}
 
+	namespace metal {
+	void FlushPendingScreenDraws ()
+	{
+		gFilterStateFlip = (access ("/tmp/cne-native-filterstate", F_OK) == 0);
+		gLastScreenMain = gFrameMainTex;
+		gFrameMainTex = -1;
+		gPrevScreenRtCount = gScreenRtIndex;
+		gScreenRtIndex = 0;
+		// [cne-events] One line per *change* of what the screen composite samples
+		// (program, texture id, size, V-flip).  "Freeplay shows Options assets" then
+		// reads as either a changed id list (engine/mod picked another atlas) or an
+		// identical list (the id's pixels changed / a frame was not presented).
+		{
+			static const bool eventLog = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_EVENTS");
+				return v != nullptr && v[0] != '0' && v[0] != '\0';
+			} ();
+			if (eventLog)
+			{
+				static std::string lastSig;
+				std::string sig;
+				char buf[128];
+				for (auto& p : gPendingScreenDraws)
+				{
+					int tw = 0, th = 0;
+					if (!p.textureIds.empty ())
+					{
+						auto tt = textures.find (p.textureIds[0]);
+						if (tt != textures.end ()) { tw = tt->second.width; th = tt->second.height; }
+					}
+					std::snprintf (buf, sizeof (buf), " %d:%d:%dx%d%s", p.program,
+						p.textureIds.empty () ? -1 : p.textureIds[0], tw, th, p.vflipped ? "F" : "");
+					sig += buf;
+				}
+				if (sig != lastSig)
+				{
+					lastSig = sig;
+					std::fprintf (stderr, "[cne-ev] screen f=%u filter=%d draws=%d:%s\n",
+						metal::gFrameIndex, gFilterStateFlip ? 1 : 0, (int)gPendingScreenDraws.size (), sig.c_str ());
+					std::fflush (stderr);
+				}
+			}
+		}
+		if (gPendingScreenDraws.empty ()) return;
+		// [cne-flipdiag] Log the camera-layer mirror decisions once per frame.  A layer
+		// whose flip flag alternates between frames is the source of the visible
+		// up/down flip; a stable flag means the flip happens inside that FBO's content.
+		{
+			static int sFlipSum = 0;
+			if (gFilterStateFlip && sFlipSum < 160)
+			{
+				std::fprintf (stderr, "[cne-metal4] screenlayers f=%u:", metal::gFrameIndex);
+				for (auto& p : gPendingScreenDraws)
+				{
+					if (p.textureIds.empty ()) continue;
+					const int t0 = p.textureIds[0];
+					auto tt = textures.find (t0);
+					if (tt == textures.end () || tt->second.width <= 1000) continue;
+					std::fprintf (stderr, " %d:%d", t0, p.vflipped ? 1 : 0);
+				}
+				std::fprintf (stderr, "\n");
+				++sFlipSum;
+			}
+		}
+		const MetalContext::State& st = MetalContext::state;
+		cne_metal4_app_target (-1, (int)st.backbufferWidth, (int)st.backbufferHeight, 1,
+			gPendingScreenClear[0], gPendingScreenClear[1], gPendingScreenClear[2], gPendingScreenClear[3], 1);
+		for (auto& p : gPendingScreenDraws)
+		{
+			cne_metal4_app_viewport (p.viewport[0], p.viewport[1], p.viewport[2], p.viewport[3]);
+			cne_metal4_app_scissor (p.scissorEnabled, p.scissor[0], p.scissor[1], p.scissor[2], p.scissor[3]);
+			for (size_t i = 0; i < p.bufferIds.size (); ++i)
+			{
+				const std::vector<uint8_t>& bytes = p.bufferBytes[i];
+				cne_metal4_app_buffer (p.bufferIds[i], bytes.empty () ? nullptr : bytes.data (), (int)bytes.size (), 0);
+			}
+			cne_metal4_app_draw (p.program, p.blendEnabled, p.srcRGB, p.dstRGB, p.srcA, p.dstA,
+				p.bufferIds.data (), p.strides.data (), (int)p.bufferIds.size (),
+				p.attribLoc.data (), p.attribBuf.data (), p.attribSize.data (), p.attribType.data (),
+				p.attribNorm.data (), p.attribOff.data (), (int)p.attribLoc.size (),
+				p.textureIds.data (), (int)p.textureIds.size (),
+				p.constantLoc.data (), p.constantComp.data (), p.constantVals.data (), (int)p.constantLoc.size (),
+				p.vsUniform.empty () ? nullptr : p.vsUniform.data (), (int)p.vsUniform.size (),
+				p.fsUniform.empty () ? nullptr : p.fsUniform.data (), (int)p.fsUniform.size (),
+				p.indexBytes.empty () ? nullptr : p.indexBytes.data (), (int)p.indexBytes.size (),
+				p.indexType, p.indexCount, p.baseVertex, p.vertexCount, p.primitive);
+		}
+		gPendingScreenDraws.clear ();
+	}
+	}
+
+	// Readback diagnostic: which texture was the main screen layer last frame?
+	extern "C" int cne_metal4_last_screen_main (void) { return gLastScreenMain; }
 	// ---------------------------------------------------------------- enums
 	//
 	// The native path deliberately uses its OWN small enums instead of GL's, so
@@ -846,6 +1430,24 @@
 		if (color) flags |= BGFX_CLEAR_COLOR;
 		if (depth) flags |= BGFX_CLEAR_DEPTH;
 		if (stencil) flags |= BGFX_CLEAR_STENCIL;
+
+		// [cne-clear] The Metal 4 native path does not use bgfx, so route the explicit
+		// clear to it.  Binding an FBO no longer clears (GL semantics); this is the
+		// only place a render target gets cleared.  Screen clears are deferred to the
+		// screen-last pass, which is where the composite actually happens.
+		if (cne_metal4_app_active ())
+		{
+			const float* nc = MetalContext::state.clearColor;
+			if (MetalContext::state.currentFramebuffer == 0)
+			{
+				metal::DeferScreenClear (nc[0], nc[1], nc[2], nc[3]);
+			}
+			else if (color)
+			{
+				cne_metal4_app_clear (color, depth, stencil, nc[0], nc[1], nc[2], nc[3]);
+			}
+			return;
+		}
 
 		// Same depth/stencil preservation rule as the GL path: OpenFL's 2D
 		// renderer only asks for the colour bit, but the backbuffer also has
@@ -1469,6 +2071,11 @@
 		texture->internalFormat = internalformat;
 		texture->type = type;
 		texture->hasData = true;
+		// A glTexImage2D replaces the texture contents with the uploaded bytes (or
+		// with undefined data when `source` is null), so it is no longer GPU-backed
+		// until a framebuffer owning it is bound and drawn.
+		texture->gpuDrawn = false;
+		texture->cpuStreaming = (source != nullptr);
 
 		const uint32_t bpp = BytesPerPixel (uploadFormat, type);
 		const size_t rowBytes = (size_t)width * bpp;
@@ -1617,6 +2224,24 @@
 			default: return;
 		}
 		texture->samplerFlags = ToBgfxSampler (*texture);
+		{
+			static int sPixelLog = 0;
+			if ((pname == 0x2801 || pname == 0x2800) && sPixelLog < 40)
+			{
+				std::fprintf (stderr, "[cne-pixel] tex=%d pname=0x%x param=0x%x min=0x%x mag=0x%x\n",
+					CurrentTextureId (), pname, param, texture->minFilter, texture->magFilter);
+				++sPixelLog;
+			}
+		}
+		// [cne-pixel] Pixel-art textures are uploaded with GL_NEAREST; the Metal app
+		// otherwise sampled everything with one linear sampler and blurred sprites.
+		// Only sprite/atlas textures get nearest.  Camera canvases and the screen
+		// composite are render targets created with null pixels; sampling those with
+		// nearest made the whole frame shimmer at non-integer camera zooms.  A texture
+		// that has CPU pixel data is a sprite/atlas, so it may use nearest.
+		const bool dataTexture = texture->hasData || !texture->pixels.empty ();
+		cne_metal4_app_tex_filter (CurrentTextureId (),
+			(dataTexture && (texture->minFilter == 0x2600 || texture->magFilter == 0x2600)) ? 1 : 0);
 	}
 
 	//@impl cne_metal_create_buffer
