@@ -975,11 +975,19 @@ namespace metal {
 		if (gMetal4Native)
 		{
 			cne_metal4_app_frame_begin ();
+			// Do NOT target/clear the screen here.  Frame() runs from SDL_GL_SwapWindow
+			// *after* the engine has already encoded this frame's draws into the current
+			// screen encoder; starting a new screen pass with clear=1 here appended a
+			// full-screen opaque-black clear after the draws, so the presented frame was
+			// black (the game picture only flashed through on lucky orderings).  The
+			// engine's own glBindFramebuffer(0) creates the screen pass and clears it
+			// before its draws.
 			static const bool debugClear = std::getenv ("CNE_METAL4_DEBUG_CLEAR") != nullptr;
-			cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
-				debugClear ? 1.0f : MetalContext::state.clearColor[0],
-				debugClear ? 0.0f : MetalContext::state.clearColor[1],
-				debugClear ? 1.0f : MetalContext::state.clearColor[2], 1.0f, 1);
+			if (debugClear)
+			{
+				cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
+					1.0f, 0.0f, 1.0f, 1.0f, 1);
+			}
 		}
 
 		// [cne-visibility] Moving the app to the Stage Manager sidebar / Dock hides the
@@ -1001,16 +1009,45 @@ namespace metal {
 			// Stage Manager keeps the window "visible" while it is parked in the sidebar, so the
 			// hidden flag alone is not enough: also treat regaining input focus as a surface
 			// re-acquire (app switching / un-minimising / Stage Manager stage changes).
-			const bool restored = (!hidden && lastHidden) || (focused && !lastFocused);
+			// The macOS volume OSD (F11/F12) briefly takes focus without changing the
+			// drawable.  Rebuilding the swap chain for a pure focus change invalidated the
+			// render targets and made stale/other assets appear with wrong opacity.  Only
+			// rebuild when the surface was actually hidden, or when its size changed.
+			static int lastRestoreWidth = 0;
+			static int lastRestoreHeight = 0;
+			int drawableWidth = 0;
+			int drawableHeight = 0;
+			QueryDrawableSize (drawableWidth, drawableHeight);
+			const bool sizeChanged = drawableWidth > 0 && drawableHeight > 0
+				&& (drawableWidth != lastRestoreWidth || drawableHeight != lastRestoreHeight);
+			const bool restored = (!hidden && lastHidden) || (focused && !lastFocused && sizeChanged);
+			// [cne-events] Every window-state edge, even when it does not rebuild the
+			// surface.  This is what tells a repro script whether the volume OSD /
+			// app switch actually de-focused or occluded the game.
+			static const bool eventLog = [] ()
+			{
+				const char* v = std::getenv ("CNE_METAL4_EVENTS");
+				return v != nullptr && v[0] != '0' && v[0] != '\0';
+			} ();
+			static int lastEventWidth = -1;
+			static int lastEventHeight = -1;
+			if (eventLog && (hidden != lastHidden || focused != lastFocused
+				|| drawableWidth != lastEventWidth || drawableHeight != lastEventHeight))
+			{
+				std::fprintf (stderr, "[cne-ev] window f=%u hidden=%d focused=%d drawable=%dx%d restore=%d\n",
+					gFrameIndex, hidden ? 1 : 0, focused ? 1 : 0, drawableWidth, drawableHeight, restored ? 1 : 0);
+				std::fflush (stderr);
+			}
+			lastEventWidth = drawableWidth;
+			lastEventHeight = drawableHeight;
 			if (restored)
 			{
-				int drawableWidth = 0;
-				int drawableHeight = 0;
-				QueryDrawableSize (drawableWidth, drawableHeight);
 				if (drawableWidth > 0 && drawableHeight > 0)
 				{
 					ResizeDrawable (drawableWidth, drawableHeight);
 				}
+				lastRestoreWidth = drawableWidth;
+				lastRestoreHeight = drawableHeight;
 				++state.surfaceEpoch;
 				std::fprintf (stderr, "[cne-visibility] surface restored: swap chain reset, framebuffers invalidated\n");
 				std::fflush (stderr);
@@ -1303,6 +1340,7 @@ namespace metal {
 
 		const double submitStartMs = SinceProcessStartMs ();
 		metal::ApplyFrameViewOrder ();
+		metal::FlushPendingScreenDraws ();
 		const double submitMs = SinceProcessStartMs () - submitStartMs;
 
 		static uint32_t sMetal4CaptureTick = 0;
@@ -1353,6 +1391,35 @@ namespace metal {
 			}
 			cne_metal4_clear_frame (layer);
 		}
+		}
+		// [cne-fps] Frame pacing for BOTH paths, so the native path and the bgfx
+		// reference can be compared in the same scene with the same binary.
+		// CNE_METAL4_PERF=1 enables it; the native path additionally prints its own
+		// breakdown as [cne-perf].
+		{
+			static const bool fpsLog = std::getenv ("CNE_METAL4_PERF") != nullptr;
+			static std::chrono::steady_clock::time_point lastTick;
+			static bool haveLast = false;
+			static double sumMs = 0.0, maxMs = 0.0;
+			static int n = 0;
+			if (fpsLog)
+			{
+				const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now ();
+				if (haveLast)
+				{
+					const double ms = std::chrono::duration<double, std::milli> (now - lastTick).count ();
+					sumMs += ms;
+					if (ms > maxMs) maxMs = ms;
+					if (++n >= 120)
+					{
+						std::fprintf (stderr, "[cne-fps] %s frames=%d fps=%.1f interval=%.2fms max=%.2fms\n",
+							gMetal4Native ? "native" : "bgfx", n, 1000.0 / (sumMs / n), sumMs / n, maxMs);
+						n = 0; sumMs = 0.0; maxMs = 0.0;
+					}
+				}
+				lastTick = now;
+				haveLast = true;
+			}
 		}
 		if (traceFrame)
 		{

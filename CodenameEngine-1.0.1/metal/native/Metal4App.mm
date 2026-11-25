@@ -6,9 +6,16 @@
 #include <dispatch/dispatch.h>
 #include "Metal4App.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <unistd.h>
+
+// Implemented in MetalNative.inc (same dylib): last frame's main screen texture.
+extern "C" int cne_metal4_last_screen_main(void);
+namespace lime { namespace metal { extern uint32_t gFrameIndex; } }
 
 namespace {
 struct ProgramDef { id vs; id fs; };
@@ -17,7 +24,10 @@ static id<MTLDevice> gDevice = nil;
 static id<MTL4CommandQueue> gQueue = nil;
 static id<MTL4CommandAllocator> gAllocator = nil;
 static id<MTL4CommandBuffer> gCommandBuffer = nil;
-static id<MTLSamplerState> gSampler = nil;
+static id<MTLSamplerState> gSamplerLinear = nil;
+static id<MTLSamplerState> gSamplerNearest = nil;
+// Per-texture filter flag: 1 = GL_NEAREST (pixel art), 0 = GL_LINEAR.
+static std::unordered_map<int,int> gTextureNearest;
 static CAMetalLayer* gLayer = nil;
 // Metal 4 command buffers never retain resources.  Every MTLBuffer/MTLTexture an
 // encoded draw can reference must stay alive (and resident) until the GPU has
@@ -38,19 +48,108 @@ static int gCaptureSaved = 0;
 // Resources replaced mid-frame stay alive until the frame completes; after the
 // next frame-begin wait they are removed from the residency sets and released.
 static std::vector<id> gRetiredResources;
+// [cne-rotate] Retirements and keep-alive anchors are held for two frames, because
+// frame_begin now only guarantees that the frame from *two* parities ago is complete.
+static std::vector<id> gRetiredPrev;
 static id<CAMetalDrawable> gDrawable = nil;
 static id<MTL4RenderCommandEncoder> gEncoder = nil;
 static MTL4RenderPassDescriptor* gPass = nil;
 static int gWidth = 0, gHeight = 0;
 static int gTarget = -2; // -2 = not begun, -1 = screen
+// [cne-clear] Binding a render target must NOT clear it with a stale
+// glClearColor: the engine draws camera canvases with deliberate transparent
+// holes (Freeplay's bg_freeplay TV window) over a lower camera layer.  The
+// reference bgfx path clears every offscreen view to transparent black
+// (CNE_METAL_RT_TRANSPARENT_CLEAR, default on), so do the same here.  The
+// clear is kept pending and applied when the pass actually opens, which also
+// lets an explicit glClear override the colour.
+static int gTargetW = 0, gTargetH = 0;
+static bool gPendingClear = false;
+static float gPendingClearColor[4] = {0.f, 0.f, 0.f, 0.f};
+// Render targets that were just (re)created hold undefined bytes.  Clear those
+// transparent on their first bind so the first frame cannot show garbage.
+static std::unordered_set<int> gFreshTargets;
 static std::unordered_map<int, id> gTextures;
-static std::unordered_map<int, id<MTLBuffer>> gBuffers;
+// [cne-rotate] Vertex/index buffers are re-uploaded every frame by the engine, so a
+// second copy per id lets frame N write the slot the GPU is not reading.  Before
+// this, the first upload of every frame had to WaitForGpu() on the previous frame
+// (8-14 ms per frame, the dominant cost of a 24 ms frame).
+struct BufferPair { id<MTLBuffer> b[2] = {nil, nil}; };
+static std::unordered_map<int, BufferPair> gBuffers;
 static std::unordered_map<int, ProgramDef> gPrograms;
 static std::unordered_map<std::string, id> gPipelines;
 static int gViewport[4] = {0,0,0,0};
 static bool gScissor = false; static int gScissorRect[4] = {0,0,0,0};
 static bool gBegun = false;
 static std::vector<id> gTransient;
+static std::vector<id> gTransientPrev;
+// [cne-perf] Per-frame scratch arena.  Every uniform block, constant-step block and
+// index block used to be its own newBufferWithBytes: allocation, a residency-set
+// insert (the set is scanned linearly on every insert, so a busy frame went
+// quadratic) and a release the frame after.  They are now 256-byte aligned slices
+// of one Shared buffer, rewritten only after frame_begin has waited for the GPU.
+struct ScratchSlot { id<MTLBuffer> buf = nil; NSUInteger cap = 0; NSUInteger used = 0; };
+// [cne-rotate] Two arenas, one per frame parity: frame N rewrites arena[p] while the
+// GPU still reads arena[p^1] from frame N-1.
+static ScratchSlot gArenas[2];
+static int gFrameParity = 0;
+// [cne-rotate] Event value that was signalled at the end of the frame that last used
+// each parity.  frame_begin waits for the *two-frames-ago* value, which is already
+// satisfied while the GPU is one frame behind - so the CPU never blocks on the GPU.
+static uint64_t gParityEvent[2] = {0, 0};
+static const NSUInteger kScratchAlign = 256;
+// [cne-perf] Argument tables are per-draw GPU objects and were also allocated two at
+// a time per draw.  A pool slot is reused only on a *later* frame (frame_begin
+// waits for the GPU first), so no table is ever rewritten under an in-flight draw.
+static std::vector<id<MTL4ArgumentTable>> gArgTableVSPool;
+static std::vector<id<MTL4ArgumentTable>> gArgTableFSPool;
+static size_t gArgTableSlot = 0;
+// [cne-perf] CNE_METAL4_PERF=1 prints a frame summary every 120 frames.  It reports
+// the *whole* frame interval (frame_end -> frame_end), the encode segment
+// (frame_begin -> frame_end) and the GPU wait inside frame_begin.  Encode alone
+// says nothing about what the player sees: GPU execution and the engine's own
+// update/uploads all happen outside it.
+static const bool gPerfLog = getenv ("CNE_METAL4_PERF") != nullptr;
+// [cne-perf] CNE_METAL4_LEGACY_ALLOC=1 restores the old per-draw allocations so the
+// two paths can be compared in the same build, same scene, same run.
+static const bool gLegacyAlloc = getenv ("CNE_METAL4_LEGACY_ALLOC") != nullptr;
+static std::chrono::steady_clock::time_point gPerfStart, gPerfLastEnd, gPerfWaitStart;
+// [cne-perf] Time spent *outside* the encode window that the renderer still owns:
+// blocking in WaitBeforeCpuWrite (waiting for the previous frame's GPU tail before
+// rewriting a texture/vertex buffer) and the texture uploads themselves.  Both run
+// between frame_end and frame_begin, so they were invisible in `encode`.
+static double gPerfCpuWriteMs = 0.0, gPerfTexUpMs = 0.0;
+static double gPerfCpuWriteSum = 0.0, gPerfTexUpSum = 0.0;
+static double gPerfGapSum = 0.0;
+// GPU time of the FBO pass, measured as the mid-frame wait (see SplitFrameBeforeScreen).
+static double gPerfFboGpuMs = 0.0, gPerfFboGpuSum = 0.0;
+// [cne-split] The FBO pass and the screen pass are submitted as two command buffers
+// on the same queue, and a queue executes what it is given in submission order, so
+// the FBO -> screen dependency is already enforced without blocking the CPU.  The old
+// WaitForGpu() here serialised every frame (CPU waits for the FBO pass, then the GPU
+// idles while the CPU encodes the screen pass) and cost ~7 ms of a 23 ms frame:
+// native ran at 34-56 fps where bgfx held 60.  Default is now "do not wait";
+// CNE_METAL4_SPLIT_WAIT=1 restores the old deterministic wait.
+static const bool gSplitWait = [] ()
+{
+	const char* v = std::getenv ("CNE_METAL4_SPLIT_WAIT");
+	return v != nullptr && v[0] == '1';
+} ();
+// Scoped accumulator; does nothing unless CNE_METAL4_PERF is set.
+struct PerfTimer
+{
+	std::chrono::steady_clock::time_point t0;
+	double* acc;
+	explicit PerfTimer (double* a) : acc (gPerfLog ? a : nullptr) { if (acc != nullptr) t0 = std::chrono::steady_clock::now (); }
+	~PerfTimer () { if (acc != nullptr) *acc += std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now () - t0).count (); }
+};
+static double gPerfEncodeSum = 0.0, gPerfEncodeMax = 0.0;
+static double gPerfIntervalSum = 0.0, gPerfIntervalMax = 0.0;
+static double gPerfWaitSum = 0.0, gPerfWaitMax = 0.0, gPerfWaitFrame = 0.0;
+static int gPerfFrames = 0, gPerfDrawsSum = 0, gPerfIntervalN = 0;
+static bool gPerfHaveLast = false;
+static int gDrawCount = 0;
+static NSUInteger gScratchPeak = 0;
 static bool gDebugDraw = false;
 static bool gDebugFbo = false;
 static id gDebugFboPipeline = nil;
@@ -58,6 +157,22 @@ static bool gDebugEngine = false;
 static id gDebugEngineLib = nil;
 static id<MTL4ArgumentTable> gDebugFboArg = nil;
 static id gDebugPipeline = nil;
+
+// [cne-events] Focus/asset forensic log.  Off unless CNE_METAL4_EVENTS=1.  Unlike
+// the [cne-metal4] draw/target diagnostics (capped at 48/80 lines) this one never
+// caps and only fires on state changes, so a repro that happens after the first
+// second of the run is still visible in the log.
+static bool EventLog()
+{
+	static const bool on = [] ()
+	{
+		const char* v = std::getenv ("CNE_METAL4_EVENTS");
+		return v != nullptr && v[0] != '0' && v[0] != '\0';
+	} ();
+	return on;
+}
+static bool gDrawableNilLogged = false;
+
 static void DrawDebugFbo()
 {
 	if (!gDebugFbo || !gEncoder || gTarget != -1) return;
@@ -80,7 +195,7 @@ static void DrawDebugFbo()
 	}
 	if (gDebugFboPipeline == nil || gDebugFboArg == nil) return;
 	[gDebugFboArg setTexture:(MTLResourceID)[it->second gpuResourceID] atIndex:0];
-	[gDebugFboArg setSamplerState:[gSampler gpuResourceID] atIndex:0];
+	[gDebugFboArg setSamplerState:[gSamplerLinear gpuResourceID] atIndex:0];
 	[gEncoder setRenderPipelineState:gDebugFboPipeline];
 	[gEncoder setArgumentTable:gDebugFboArg atStages:MTLRenderStageFragment];
 	[gEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:1];
@@ -116,7 +231,11 @@ static void MarkResident(id<MTLAllocation> allocation)
 	}
 }
 
-static void MarkFrameResident(id<MTLAllocation> allocation)
+// [cne-perf] Per-draw buffers used to be registered here so the frame residency set
+// knew about them; every payload now lives in the persist-resident scratch arena, so
+// nothing is left to register per frame.  Kept (unused) because the residency-set
+// plumbing in frame_begin / CommitResidency is still wired and may be needed again.
+__attribute__((unused)) static void MarkFrameResident(id<MTLAllocation> allocation)
 {
 	if (allocation == nil || gResidentFrame == nil) return;
 	if (![gResidentFrame containsAllocation:allocation])
@@ -132,11 +251,131 @@ static void CommitResidency()
 	if (gResidentFrame != nil && gFrameDirty) { [gResidentFrame commit]; gFrameDirty = false; }
 }
 
+// [cne-perf] Allocate `size` bytes from the frame's scratch arena and return the
+// buffer plus the 256-byte aligned offset to write at.  The arena is resident for
+// good (MarkResident) and only reset at frame_begin, i.e. after the GPU finished
+// the previous frame, so a slice never changes under an in-flight draw.
+static id<MTLBuffer> ScratchAlloc (NSUInteger size, NSUInteger* outOffset)
+{
+	if (outOffset != nullptr) *outOffset = 0;
+	if (size == 0) return nil;
+	// [cne-perf] A/B path: one buffer per allocation, registered per frame, exactly
+	// like the code before the arena existed.
+	if (gLegacyAlloc)
+	{
+		id<MTLBuffer> nb = [gDevice newBufferWithLength:size options:MTLResourceStorageModeShared];
+		if (nb != nil) { gTransient.push_back (nb); MarkFrameResident (nb); }
+		return nb;
+	}
+	const NSUInteger aligned = (size + (kScratchAlign - 1)) & ~(kScratchAlign - 1);
+	ScratchSlot& slot = gArenas[gFrameParity];
+	if (slot.buf == nil || slot.used + aligned > slot.cap)
+	{
+		NSUInteger cap = slot.cap != 0 ? slot.cap : (4u << 20);
+		while (cap < aligned) cap *= 2;
+		id<MTLBuffer> nb = [gDevice newBufferWithLength:cap options:MTLResourceStorageModeShared];
+		if (nb == nil) return nil;
+		if (slot.buf != nil)
+		{
+			// Draws already encoded this frame still address the old buffer: keep it
+			// alive until the frame that used this parity is guaranteed complete.
+			gTransient.push_back (slot.buf);
+			gRetiredResources.push_back (slot.buf);
+		}
+		slot.buf = nb;
+		slot.cap = cap;
+		slot.used = 0;
+		MarkResident (nb);
+	}
+	if (outOffset != nullptr) *outOffset = slot.used;
+	slot.used += aligned;
+	return slot.buf;
+}
+
+// [cne-perf] One fixed-size table pair per draw slot in the frame, allocated once
+// and reused every frame after.  The bound is the largest any caller can ask for:
+// 8 vertex streams (the GL side caps bufferCount at 8) + uniform block + constant
+// block, plus 16 texture slots and a sampler.  Bindings a draw does not set are
+// harmless: the pipeline determines which slots are actually read, and the GL
+// layer always binds every stream / constant / texture its program declares.
+static id<MTL4ArgumentTable> AcquireArgTable (std::vector<id<MTL4ArgumentTable>>& pool)
+{
+	if (!gLegacyAlloc && gArgTableSlot < pool.size ()) return pool[gArgTableSlot];
+	MTL4ArgumentTableDescriptor* atd = [MTL4ArgumentTableDescriptor new];
+	atd.maxBufferBindCount = 18;
+	atd.maxTextureBindCount = 16;
+	atd.maxSamplerStateBindCount = 1;
+	atd.initializeBindings = YES;
+	atd.supportAttributeStrides = YES;
+	id<MTL4ArgumentTable> table = [gDevice newArgumentTableWithDescriptor:atd error:nil];
+	// [cne-perf] Legacy A/B path: never pool, just keep the table alive for the frame
+	// like the pre-arena code did.
+	if (gLegacyAlloc) { gTransient.push_back (table); return table; }
+	pool.push_back (table);
+	return table;
+}
+
 static void WaitForGpu()
 {
 	if (gEvent == nil || gEventValue == 0) return;
 	if (![gEvent waitUntilSignaledValue:gEventValue timeoutMS:3000])
 		fprintf(stderr, "[cne-metal4] completion event timed out at value %llu\n", (unsigned long long)gEventValue);
+}
+
+// [cne-write-race] Every texture/vertex buffer here lives in MTLStorageModeShared and
+// is rewritten from the CPU (replaceRegion / memcpy into contents).  Metal 4 does not
+// track that write against the GPU still *reading* the same resource from an in-flight
+// frame, and the engine uploads its dirty bitmaps/geometry BEFORE the frame's first
+// target bind - i.e. before cne_metal4_app_frame_begin()'s WaitForGpu() runs.  The GPU
+// could therefore be sampling vertices/textures that the CPU was halfway through
+// rewriting: sprites jumped to other positions/scales and glyph quads showed slices of
+// neighbouring cells.  Waiting here (once per frame, only when a CPU write happens)
+// closes the window; READBACK=1 hid the same bug because it waits every frame.
+// [cne-rotate] Retired by the parity rotation above: nothing calls this any more, but
+// it is kept as the documented fallback if a future upload path cannot be rotated.
+__attribute__((unused)) static void WaitBeforeCpuWrite()
+{
+	static uint64_t waitedValue = 0;
+	if (gEvent == nil || gEventValue == 0) return;
+	if (waitedValue == gEventValue) return;
+	// [cne-perf] This block is the previous frame's GPU tail, and it happens in the
+	// upload phase *before* frame_begin - the one place a GPU bound used to hide.
+	PerfTimer pt (&gPerfCpuWriteMs);
+	WaitForGpu();
+	waitedValue = gEventValue;
+}
+
+static void EndEncoder();
+static void EnsureEncoder();
+static void FinishTarget();
+static void ApplyViewportScissor();
+
+// Finish the current command buffer and wait until the GPU has executed it.  Used
+// at the FBO -> screen transition: the screen composite samples FBO textures that
+// were just written, and Metal 4 cross-encoder ordering (barriers) proved fragile
+// here.  A real submit/wait is slower but deterministic.
+static void SplitFrameBeforeScreen()
+{
+	if (!gBegun) return;
+	FinishTarget();
+	CommitResidency();
+	[gCommandBuffer endCommandBuffer];
+	const id cbs[] = { gCommandBuffer };
+	[gQueue commit:cbs count:1];
+	++gEventValue;
+	if (gEvent != nil) [gQueue signalEvent:gEvent value:gEventValue];
+	// [cne-perf] This is the FBO pass's GPU time, and it is also a bubble: the CPU
+	// cannot start encoding the screen pass until the GPU has finished every FBO.
+	// CNE_METAL4_SPLIT_WAIT=0 keeps the two command buffers but relies on submission
+	// order for the FBO -> screen dependency, which lets the CPU encode the screen
+	// pass while the GPU is still drawing the FBOs.
+	if (gSplitWait)
+	{
+		PerfTimer pt (&gPerfFboGpuMs);
+		WaitForGpu();
+	}
+	[gCommandBuffer beginCommandBufferWithAllocator:gAllocator];
+	gBegun = true;
 }
 
 static void CreateFrameAnchors()
@@ -184,22 +423,71 @@ static MTLPixelFormat TargetPixelFormat(int textureId)
 
 static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixels, int glFormat)
 {
+	// [cne-perf] Texture uploads run in the pre-frame_begin upload phase too.
+	PerfTimer pt (&gPerfTexUpMs);
 	const MTLPixelFormat pf = PixelFormatForGl(glFormat);
 	auto it = gTextures.find(textureId);
+	// [cne-events] Content fingerprint for the forensic log: 256 samples spread over
+	// the whole upload.  A GL id that gets re-created for a *different* atlas shows
+	// up here as replace + a changed hash; an in-place re-upload of the same image
+	// keeps the hash.  Reading is bounded, so this is safe to leave enabled.
+	auto pixelHash = [pixels, w, h] () -> unsigned
+	{
+		if (pixels == nullptr) return 0u;
+		const uint8_t* p = (const uint8_t*)pixels;
+		const size_t bytes = (size_t)(w > 0 ? w : 0) * (size_t)(h > 0 ? h : 0) * 4u;
+		if (bytes == 0) return 0u;
+		unsigned v = 2166136261u;
+		for (int i = 0; i < 256; ++i)
+		{
+			const size_t off = ((size_t)i * (bytes - 1u)) / 255u;
+			v ^= p[off];
+			v *= 16777619u;
+		}
+		return v;
+	};
+	// [cne-rotate] A content upload never rewrites the texture the GPU may still be
+	// sampling: it allocates a fresh texture and retires the old one (the branches
+	// below already support that).  This replaces the old WaitBeforeCpuWrite() here,
+	// which blocked the CPU for the whole previous frame (8-14 ms) on every frame
+	// that uploaded anything at all.
+	// [cne-events] 1x1/2x2 textures are the solid-fill / flash quads: the texel decides
+	// whether a fill is white or black, so print it whenever it is (re)uploaded.
+	if (pixels != nullptr && w > 0 && h > 0 && w <= 2 && h <= 2)
+	{
+		static const bool tinyLog = [] ()
+		{
+			const char* v = std::getenv ("CNE_METAL4_EVENTS");
+			return v != nullptr && v[0] != '0' && v[0] != '\0';
+		} ();
+		if (tinyLog)
+		{
+			const uint8_t* q = (const uint8_t*)pixels;
+			std::fprintf (stderr, "[cne-ev] tiny id=%d %dx%d rgba=%02x%02x%02x%02x f=%u\n",
+				textureId, w, h, q[0], q[1], q[2], q[3], lime::metal::gFrameIndex);
+		}
+	}
 	// Never recreate an existing render target just because a later sampler bind
 	// reports a different GL upload format: the render pass may already be attached
 	// to the current texture, and replacing it would leave the composite sampling a
 	// blank new texture (the screen went black after the per-format change).
 	bool formatMatches = true;
 	if (it != gTextures.end()) formatMatches = ([it->second pixelFormat] == pf) || isRT;
+	// [cne-rotate] `pixels == nullptr` keeps the in-place path (render targets and
+	// no-op binds); a real content upload falls through to the swap path below.
 	if (it != gTextures.end() && (NSUInteger)[it->second width] == (NSUInteger)w && (NSUInteger)[it->second height] == (NSUInteger)h
 		&& formatMatches
+		&& pixels == nullptr
 		&& (([it->second usage] & MTLTextureUsageRenderTarget) != 0 || !isRT)) {
-		if (pixels != nullptr) {
-			[it->second replaceRegion:MTLRegionMake2D(0,0,(NSUInteger)w,(NSUInteger)h) mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)w*4];
+		if (EventLog())
+		{
+			std::fprintf (stderr, "[cne-ev] tex id=%d %dx%d fmt=%d rt=%d px=%d hash=%08x mod=inplace f=%u\n",
+				textureId, w, h, glFormat, isRT, pixels != nullptr ? 1 : 0, pixelHash (), lime::metal::gFrameIndex);
+			std::fflush (stderr);
 		}
 		return it->second;
 	}
+	const bool hadOld = (it != gTextures.end() && it->second != nil);
 	MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
 	// A texture may be uploaded/sampled before OpenFL attaches it to a framebuffer.
 	// Metal cannot add usages after creation, so every texture gets RenderTarget up
@@ -208,7 +496,7 @@ static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixel
 	td.storageMode = MTLStorageModeShared;
 	id tex = [gDevice newTextureWithDescriptor:td];
 	if (pixels != nullptr) [tex replaceRegion:MTLRegionMake2D(0,0,(NSUInteger)w,(NSUInteger)h) mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)w*4];
-	if (it != gTextures.end() && it->second != nil)
+	if (hadOld)
 	{
 		// The old texture may still be referenced by an in-flight command buffer.
 		gTransient.push_back(it->second);
@@ -216,6 +504,13 @@ static id EnsureTexture(int textureId, int w, int h, int isRT, const void* pixel
 	}
 	gTextures[textureId] = tex;
 	MarkResident(tex);
+	if (isRT) gFreshTargets.insert(textureId);
+	if (EventLog())
+	{
+		std::fprintf (stderr, "[cne-ev] tex id=%d %dx%d fmt=%d rt=%d px=%d hash=%08x mod=%s f=%u\n",
+			textureId, w, h, glFormat, isRT, pixels != nullptr ? 1 : 0, pixelHash (), hadOld ? "replace" : "new", lime::metal::gFrameIndex);
+		std::fflush (stderr);
+	}
 	return tex;
 }
 
@@ -224,42 +519,14 @@ static void EndEncoder()
 	if (gEncoder != nil) { [gEncoder endEncoding]; gEncoder = nil; }
 }
 
-static int sFrameNo = 0;
-static void BeginTarget(int textureId, int w, int h, int isScreen, float r, float g, float b, float a, int clearColor)
+// Apply the mirrored GL viewport/scissor to the encoder that is about to be
+// created.  The rects are stored in GL (bottom-left) space; a full-target rect
+// needs no flip, a sub-rect does.
+static void ApplyViewportScissor()
 {
-	static const bool fboDebugClear = getenv("CNE_METAL4_DEBUG_FBO_CLEAR") != nullptr;
-	if (!isScreen && fboDebugClear) { r = 1.0f; g = 0.0f; b = 1.0f; a = 1.0f; clearColor = 1; }
-	static int sTargetLog = 0;
-	if (gVerboseLog || sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d rgba=%.2f,%.2f,%.2f,%.2f\n", sFrameNo, isScreen, textureId, w, h, clearColor, r, g, b, a); ++sTargetLog; }
-	EndEncoder();
-	gPass = [MTL4RenderPassDescriptor new];
-	gPass.renderTargetWidth = (NSUInteger)w;
-	gPass.renderTargetHeight = (NSUInteger)h;
-	id color = nil;
-	if (isScreen) {
-		if (gDrawable == nil && gLayer != nil) gDrawable = [gLayer nextDrawable];
-		if (gDrawable == nil) { gTarget = -1; return; }
-		color = gDrawable.texture;
-	} else {
-		int targetGlFormat = 0x80E1;
-		auto existing = gTextures.find(textureId);
-		if (existing != gTextures.end() && [existing->second pixelFormat] == MTLPixelFormatRGBA8Unorm) targetGlFormat = 0x1908;
-		color = EnsureTexture(textureId, w, h, 1, nullptr, targetGlFormat);
-	}
-	gPass.colorAttachments[0].texture = color;
-	gPass.colorAttachments[0].loadAction = clearColor ? MTLLoadActionClear : MTLLoadActionLoad;
-	gPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-	gPass.colorAttachments[0].clearColor = MTLClearColorMake(r,g,b,a);
-	gEncoder = [gCommandBuffer renderCommandEncoderWithDescriptor:gPass];
-	// Metal 4 render passes are not implicitly ordered with earlier encoders.  The
-	// screen composite samples the FBO written by the immediately preceding encoder;
-	// without a consumer barrier the sample can land before the FBO write is visible,
-	// which showed up as an image that was correct on some frames and black on others.
-	[gEncoder barrierAfterQueueStages:(MTLStageVertex | MTLStageFragment)
-	                     beforeStages:(MTLStageVertex | MTLStageFragment)
-	                visibilityOptions:MTL4VisibilityOptionDevice];
+	if (gEncoder == nil) return;
+	const int w = gTargetW, h = gTargetH;
 	if (gViewport[2] > 0) {
-		// OpenGL viewport/scissor y grows from the bottom; Metal's grows from the top.
 		double vy = (double)gViewport[1];
 		if (gViewport[2] != w || gViewport[3] != h) vy = (double)h - ((double)gViewport[1] + (double)gViewport[3]);
 		[gEncoder setViewport:(MTLViewport){(double)gViewport[0],vy,(double)gViewport[2],(double)gViewport[3],0.0,1.0}];
@@ -269,13 +536,100 @@ static void BeginTarget(int textureId, int w, int h, int isScreen, float r, floa
 		if (gScissorRect[2] != w || gScissorRect[3] != h) sy = (double)h - ((double)gScissorRect[1] + (double)gScissorRect[3]);
 		if (sy < 0) sy = 0;
 		[gEncoder setScissorRect:(MTLScissorRect){(NSUInteger)gScissorRect[0],(NSUInteger)sy,(NSUInteger)gScissorRect[2],(NSUInteger)gScissorRect[3]}];
+	} else {
+		[gEncoder setScissorRect:(MTLScissorRect){0,0,(NSUInteger)w,(NSUInteger)h}];
 	}
-	gTarget = isScreen ? -1 : textureId;
+}
+
+// Open the Metal render pass for the currently selected target.  Called from the
+// first draw after a target bind and from explicit clears.
+static void EnsureEncoder()
+{
+	if (gEncoder != nil) return;
+	if (gTarget == -2) return;
+	id color = nil;
+	if (gTarget == -1) {
+		if (gDrawable == nil && gLayer != nil) gDrawable = [gLayer nextDrawable];
+		// [cne-events] CAMetalLayer returns nil while the window is occluded / the
+		// process is being throttled.  Log the ok<->nil edges: a screen draw that is
+		// silently dropped here is the only way a frame can render offscreen content
+		// but never present it.
+		if (EventLog() && (gDrawable == nil) != gDrawableNilLogged)
+		{
+			gDrawableNilLogged = (gDrawable == nil);
+			std::fprintf (stderr, "[cne-ev] drawable %s f=%u\n", gDrawable == nil ? "nil" : "ok", lime::metal::gFrameIndex);
+			std::fflush (stderr);
+		}
+		if (gDrawable == nil) return;
+		color = gDrawable.texture;
+	} else {
+		auto it = gTextures.find(gTarget);
+		if (it == gTextures.end() || it->second == nil) return;
+		color = it->second;
+	}
+	gPass = [MTL4RenderPassDescriptor new];
+	gPass.renderTargetWidth = (NSUInteger)gTargetW;
+	gPass.renderTargetHeight = (NSUInteger)gTargetH;
+	gPass.colorAttachments[0].texture = color;
+	gPass.colorAttachments[0].loadAction = gPendingClear ? MTLLoadActionClear : MTLLoadActionLoad;
+	gPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+	gPass.colorAttachments[0].clearColor = MTLClearColorMake(gPendingClearColor[0], gPendingClearColor[1],
+		gPendingClearColor[2], gPendingClearColor[3]);
+	gEncoder = [gCommandBuffer renderCommandEncoderWithDescriptor:gPass];
+	gPendingClear = false;
+	ApplyViewportScissor();
+}
+
+// Encode a pending clear even when the target received no draws (a clear-only
+// pass), then close the encoder.
+static void FinishTarget()
+{
+	if (gEncoder == nil && gTarget >= 0 && gPendingClear) EnsureEncoder();
+	EndEncoder();
+}
+
+static int sFrameNo = 0;
+static void BeginTarget(int textureId, int w, int h, int isScreen, float r, float g, float b, float a, int clearColor)
+{
+	static const bool fboDebugClear = getenv("CNE_METAL4_DEBUG_FBO_CLEAR") != nullptr;
+	if (!isScreen && fboDebugClear) { r = 1.0f; g = 0.0f; b = 1.0f; a = 1.0f; clearColor = 1; }
+	static int sTargetLog = 0;
+	if (gVerboseLog || sTargetLog < 80) { fprintf(stderr, "[cne-metal4] target f=%d screen=%d tex=%d %dx%d clear=%d rgba=%.2f,%.2f,%.2f,%.2f\n", sFrameNo, isScreen, textureId, w, h, clearColor, r, g, b, a); ++sTargetLog; }
+	const bool previousWasFbo = (gTarget >= 0);
+	if (isScreen && previousWasFbo) SplitFrameBeforeScreen();
+	else FinishTarget();
+	gPass = nil;
+	gTarget = -2;
+	gTargetW = w;
+	gTargetH = h;
+	if (!isScreen && gFreshTargets.erase(textureId) > 0)
+	{
+		// First use of a freshly created attachment: start from transparent so the
+		// previous (undefined) bytes cannot leak into the composite.
+		r = 0.f; g = 0.f; b = 0.f; a = 0.f; clearColor = 1;
+	}
+	gPendingClear = (clearColor != 0);
+	gPendingClearColor[0] = r; gPendingClearColor[1] = g;
+	gPendingClearColor[2] = b; gPendingClearColor[3] = a;
+	if (isScreen) {
+		if (gDrawable == nil && gLayer != nil) gDrawable = [gLayer nextDrawable];
+		if (gDrawable == nil) { gTarget = -1; return; }
+		gTarget = -1;
+	} else {
+		int targetGlFormat = 0x80E1;
+		auto existing = gTextures.find(textureId);
+		if (existing != gTextures.end() && [existing->second pixelFormat] == MTLPixelFormatRGBA8Unorm) targetGlFormat = 0x1908;
+		EnsureTexture(textureId, w, h, 1, nullptr, targetGlFormat);
+		gTarget = textureId;
+	}
 }
 
 static id GetPipeline(ProgramDef& prog, const int* attribLoc, const int* attribBuf, const int* attribSize, const int* attribType, const int* attribNorm, const int* attribOff, int attribCount, int bufferCount, const int* strides, int blendEnabled, int srcRGB, int dstRGB, int srcA, int dstA, MTLPixelFormat format, const int* constLoc, const int* constComp, int constCount)
 {
 	std::string key = (gDebugEngine ? "dbg:" : "") + std::to_string((int)[prog.vs hash]) + ":" + std::to_string((int)[prog.fs hash]) + ":";
+	// [cne-perf] The key is rebuilt for every draw; reserve once so the appends below
+	// do not reallocate the buffer a dozen times per draw.
+	key.reserve (2048);
 	key += std::to_string(blendEnabled) + "," + std::to_string(srcRGB) + "," + std::to_string(dstRGB) + "," + std::to_string(srcA) + "," + std::to_string(dstA) + ":" + std::to_string((int)format);
 	for (int i = 0; i < constCount; ++i) key += "~" + std::to_string(constLoc[i]) + "," + std::to_string(constComp[i]);
 	for (int i = 0; i < attribCount; ++i) { key += "|" + std::to_string(attribLoc[i]) + "," + std::to_string(attribBuf[i]) + "," + std::to_string(attribSize[i]) + "," + std::to_string(attribType[i]) + "," + std::to_string(attribNorm[i]) + "," + std::to_string(attribOff[i]); }
@@ -398,7 +752,13 @@ static int InitDeviceCommon(int width, int height)
 	sd.magFilter = MTLSamplerMinMagFilterLinear;
 	sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
 	sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-	gSampler = [gDevice newSamplerStateWithDescriptor:sd];
+	gSamplerLinear = [gDevice newSamplerStateWithDescriptor:sd];
+	MTLSamplerDescriptor* sn = [MTLSamplerDescriptor new];
+	sn.minFilter = MTLSamplerMinMagFilterNearest;
+	sn.magFilter = MTLSamplerMinMagFilterNearest;
+	sn.sAddressMode = MTLSamplerAddressModeClampToEdge;
+	sn.tAddressMode = MTLSamplerAddressModeClampToEdge;
+	gSamplerNearest = [gDevice newSamplerStateWithDescriptor:sn];
 	gQueue = [gDevice newMTL4CommandQueue];
 	gAllocator = [gDevice newCommandAllocator];
 	gCommandBuffer = [gDevice newCommandBuffer];
@@ -440,24 +800,44 @@ extern "C" void cne_metal4_app_frame_begin(void)
 	// switch released uniform/index buffers that earlier draws in the same command
 	// buffer still referenced (Metal 4 does not retain them).
 	if (gBegun) return;
-	// Metal 4 command buffers do not retain the resources bound into them, and the
-	// per-draw argument tables / index buffers are local objects.  Wait for the
-	// previous frame before releasing last frame's anchors, then start a fresh set.
-	WaitForGpu();
-	if (!gRetiredResources.empty())
+	// [cne-rotate] Everything the CPU rewrites (scratch arena, vertex/index buffers,
+	// re-uploaded textures) is double buffered by frame parity, so the only thing that
+	// must be complete before this frame starts is the frame that used *this* parity -
+	// two frames ago.  With the GPU at most one frame behind that event is already
+	// signalled and this returns immediately; the old code waited on the *previous*
+	// frame here (and once more before the uploads), which serialised every frame.
+	const uint64_t parityWait = gParityEvent[gFrameParity];
+	if (gPerfLog)
 	{
-		for (id retired : gRetiredResources)
-		{
-			if (gResidentPersist != nil) [gResidentPersist removeAllocation:(id<MTLAllocation>)retired];
-			if (gResidentFrame != nil) [gResidentFrame removeAllocation:(id<MTLAllocation>)retired];
-		}
+		gPerfWaitStart = std::chrono::steady_clock::now ();
+		if (gEvent != nil && parityWait != 0) [gEvent waitUntilSignaledValue:parityWait timeoutMS:3000];
+		gPerfWaitFrame = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now () - gPerfWaitStart).count ();
+	}
+	else if (gEvent != nil && parityWait != 0) [gEvent waitUntilSignaledValue:parityWait timeoutMS:3000];
+	// Anchors retired two frames ago are safe to drop now; this frame's retirements
+	// stay alive for one more frame (they may still be referenced by the GPU).
+	for (id retired : gRetiredPrev)
+	{
+		if (gResidentPersist != nil) [gResidentPersist removeAllocation:(id<MTLAllocation>)retired];
+		if (gResidentFrame != nil) [gResidentFrame removeAllocation:(id<MTLAllocation>)retired];
+	}
+	if (!gRetiredPrev.empty())
+	{
 		if (gResidentPersist != nil) [gResidentPersist commit];
 		if (gResidentFrame != nil) [gResidentFrame commit];
-		gRetiredResources.clear();
 		gPersistDirty = false;
 		gFrameDirty = false;
 	}
-	gTransient.clear();
+	gRetiredPrev.clear();
+	gRetiredPrev.swap (gRetiredResources);
+	gTransientPrev.clear();
+	gTransientPrev.swap (gTransient);
+	// [cne-rotate] This parity's arena was last written two frames ago and that frame
+	// is complete (see the wait above), so its slices can be handed out again.
+	// Argument-table slots are safe for the same reason.
+	gArenas[gFrameParity].used = 0;
+	gArgTableSlot = 0;
+	if (gPerfLog) { gPerfStart = std::chrono::steady_clock::now (); gDrawCount = 0; }
 	if (gResidentFrame != nil) { [gResidentFrame removeAllAllocations]; [gResidentFrame commit]; gFrameDirty = false; }
 	[gCommandBuffer beginCommandBufferWithAllocator:gAllocator];
 	gBegun = true;
@@ -467,6 +847,21 @@ extern "C" void cne_metal4_app_target(int textureId, int width, int height, int 
 	cne_metal4_app_frame_begin();
 	if (gHeadless && isScreen) return;
 	BeginTarget(textureId, width, height, isScreen, r, g, b, a, clearColor);
+}
+
+// Explicit glClear on the target that is currently selected.  GL clears the whole
+// attachment with the current clear colour; the clear is recorded on the pending
+// pass so the next draw opens it with loadAction=Clear.  If the pass already has
+// draws, close it and start a fresh one.
+extern "C" void cne_metal4_app_clear(int color, int depth, int stencil, float r, float g, float b, float a)
+{
+	(void)depth; (void)stencil;
+	if (!gBegun || gTarget < 0) return;
+	if (!color) return;
+	gPendingClear = true;
+	gPendingClearColor[0] = r; gPendingClearColor[1] = g;
+	gPendingClearColor[2] = b; gPendingClearColor[3] = a;
+	if (gEncoder != nil) EndEncoder();
 }
 static void CaptureScreen()
 {
@@ -531,7 +926,21 @@ static void ReadCapture()
 		}
 		++sFboStats;
 	}
-	if (nonBlack == 0 || gCaptureSaved >= 8) return;
+	// [cne-readback] Only once gameplay is running (main screen layer >= 300),
+	// capture consecutive drawable + world-FBO frames.  Consecutive frames are
+	// what reveal a per-frame up/down flip; the earlier 20-frame spacing could
+	// always land on the same parity.
+	static bool readbackFilterState = false;
+	// [cne-events] CNE_METAL4_READBACK_ALL=1 captures from the first frame instead of
+	// waiting for Freeplay/PlayState (the filter-state file).  Needed to see menu-only
+	// artefacts; 10-frame spacing keeps ~12 captures inside a 2 s window overlay.
+	static const bool readbackAll = std::getenv("CNE_METAL4_READBACK_ALL") != nullptr;
+	if (!readbackFilterState && (readbackAll || access("/tmp/cne-native-filterstate", F_OK) == 0)) readbackFilterState = true;
+	if (!readbackFilterState) return;
+	static int lastSavedFrame = -1000;
+	if (sFrameNo - lastSavedFrame < (readbackAll ? 10 : 30)) return;
+	if (nonBlack == 0 || gCaptureSaved >= (readbackAll ? 60 : 40)) return;
+	lastSavedFrame = sFrameNo;
 	char path[160];
 	std::snprintf(path, sizeof(path), "/tmp/cne-frame-%04d.ppm", sFrameNo);
 	std::FILE* f = std::fopen(path, "wb");
@@ -550,6 +959,38 @@ static void ReadCapture()
 	std::fclose(f);
 	++gCaptureSaved;
 	fprintf(stderr, "[cne-metal4] capture wrote %s\n", path);
+
+	// Also dump the main world FBO, so the composite flip can be separated from
+	// a flip inside the camera's own filter chain.
+	const int mainTex = cne_metal4_last_screen_main();
+	auto mt = gTextures.find(mainTex);
+	if (mt != gTextures.end() && mt->second != nil)
+	{
+		id<MTLTexture> t = mt->second;
+		const int tw = (int)[t width], th = (int)[t height];
+		if (tw > 0 && th > 0)
+		{
+			std::vector<uint8_t> fb((size_t)tw * (size_t)th * 4);
+			[t getBytes:fb.data() bytesPerRow:(NSUInteger)tw * 4 fromRegion:MTLRegionMake2D(0,0,(NSUInteger)tw,(NSUInteger)th) mipmapLevel:0];
+			char wp[160];
+			std::snprintf(wp, sizeof(wp), "/tmp/cne-world-%04d.ppm", sFrameNo);
+			std::FILE* wf = std::fopen(wp, "wb");
+			if (wf != nullptr)
+			{
+				const int ww = tw / 4, wh = th / 4;
+				std::fprintf(wf, "P6\n%d %d\n255\n", ww, wh);
+				for (int y = 0; y < wh; ++y)
+					for (int x = 0; x < ww; ++x)
+					{
+						const size_t si = ((size_t)(y * 4) * (size_t)tw + (size_t)(x * 4)) * 4;
+						const uint8_t rgb[3] = { fb[si + 2], fb[si + 1], fb[si + 0] };
+						std::fwrite(rgb, 1, 3, wf);
+					}
+				std::fclose(wf);
+				fprintf(stderr, "[cne-metal4] world wrote %s\n", wp);
+			}
+		}
+	}
 }
 
 extern "C" void cne_metal4_app_frame_end(void)
@@ -558,6 +999,9 @@ extern "C" void cne_metal4_app_frame_end(void)
 	++sFrameNo;
 	fprintf(stderr, "[cne-metal4] frame_end f=%d target=%d drawable=%p\n", sFrameNo, gTarget, (__bridge void*)gDrawable);
 	if (!gHeadless && gTarget == -2) BeginTarget(-1, gWidth, gHeight, 1, 0,0,0,1, 1);
+	// Screen passes are created lazily; make sure the pending clear is encoded
+	// even if nothing was drawn to the screen this frame.
+	EnsureEncoder();
 	DrawDebugFbo();
 	DrawDebugTriangle();
 	EndEncoder();
@@ -572,49 +1016,83 @@ extern "C" void cne_metal4_app_frame_end(void)
 	if (gDrawable != nil) { [gQueue signalDrawable:gDrawable]; [gDrawable present]; gDrawable = nil; }
 	if (gHeadless || gReadback) WaitForGpu();
 	if (gReadback) ReadCapture();
+	// [cne-rotate] Hand this parity to the other buffer set for the next frame.
+	gParityEvent[gFrameParity] = gEventValue;
+	gFrameParity ^= 1;
+	if (gPerfLog)
+	{
+		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now ();
+		const double encode = std::chrono::duration<double, std::milli>(now - gPerfStart).count ();
+		gPerfEncodeSum += encode;
+		if (encode > gPerfEncodeMax) gPerfEncodeMax = encode;
+		if (gPerfHaveLast)
+		{
+			const double interval = std::chrono::duration<double, std::milli>(now - gPerfLastEnd).count ();
+			gPerfIntervalSum += interval;
+			if (interval > gPerfIntervalMax) gPerfIntervalMax = interval;
+			// Everything the frame spent outside [frame_begin, frame_end]: engine
+			// update, the upload phase, present.  cpuwrite/texup split out the part
+			// the renderer owns; the remainder is the engine's own CPU work.
+			gPerfGapSum += interval - encode;
+			++gPerfIntervalN;
+		}
+		gPerfCpuWriteSum += gPerfCpuWriteMs; gPerfCpuWriteMs = 0.0;
+		gPerfTexUpSum += gPerfTexUpMs; gPerfTexUpMs = 0.0;
+		gPerfFboGpuSum += gPerfFboGpuMs; gPerfFboGpuMs = 0.0;
+		gPerfLastEnd = now;
+		gPerfHaveLast = true;
+		gPerfWaitSum += gPerfWaitFrame;
+		if (gPerfWaitFrame > gPerfWaitMax) gPerfWaitMax = gPerfWaitFrame;
+		gPerfDrawsSum += gDrawCount;
+		if (gArenas[gFrameParity ^ 1].used > gScratchPeak) gScratchPeak = gArenas[gFrameParity ^ 1].used;
+		if (++gPerfFrames >= 120)
+		{
+			const double n = (double)(gPerfIntervalN > 0 ? gPerfIntervalN : 1);
+			const double avgInterval = gPerfIntervalSum / n;
+			std::fprintf (stderr, "[cne-perf] frames=%d fps=%.1f interval=%.2fms max=%.2fms encode=%.2fms gap=%.2fms cpuwrite=%.2fms fbogpu=%.2fms texup=%.2fms gpuwait=%.2fms draws=%.0f arena=%.0fKB tables=%zu%s%s\n",
+				gPerfFrames, avgInterval > 0.0 ? 1000.0 / avgInterval : 0.0, avgInterval, gPerfIntervalMax,
+				gPerfEncodeSum / gPerfFrames, gPerfGapSum / n,
+				gPerfCpuWriteSum / gPerfFrames, gPerfFboGpuSum / gPerfFrames, gPerfTexUpSum / gPerfFrames,
+				gPerfWaitSum / gPerfFrames, (double)gPerfDrawsSum / gPerfFrames,
+				(double)gScratchPeak / 1024.0, gArgTableVSPool.size (), gLegacyAlloc ? " legacy" : "",
+				gSplitWait ? " splitwait" : "");
+			gPerfFrames = 0; gPerfIntervalN = 0;
+			gPerfGapSum = gPerfCpuWriteSum = gPerfTexUpSum = 0.0;
+			gPerfFboGpuSum = 0.0;
+			gPerfEncodeSum = gPerfEncodeMax = 0.0;
+			gPerfIntervalSum = gPerfIntervalMax = 0.0;
+			gPerfWaitSum = gPerfWaitMax = 0.0;
+			gPerfDrawsSum = 0; gScratchPeak = 0;
+		}
+	}
 	gTarget = -2; gBegun = false;
-}
-static int CurrentTargetHeight()
-{
-	if (gTarget == -1) return gHeight;
-	if (gTarget >= 0) { auto it = gTextures.find(gTarget); if (it != gTextures.end()) return (int)[it->second height]; }
-	return gHeight;
 }
 extern "C" void cne_metal4_app_viewport(int x,int y,int w,int h){
 	static int sVpLog = 0;
 	if (sVpLog < 24) { fprintf(stderr, "[cne-metal4] viewport x=%d y=%d %dx%d target=%d\n", x, y, w, h, gTarget); ++sVpLog; }
 	gViewport[0]=x; gViewport[1]=y; gViewport[2]=w; gViewport[3]=h;
-	if(gEncoder){
-		int th = CurrentTargetHeight();
-		double vy = (w == gViewport[2] && h == th) ? 0.0 : (double)th - ((double)y + (double)h);
-		[gEncoder setViewport:(MTLViewport){(double)x,vy,(double)w,(double)h,0,1}];
-	}
+	if(gEncoder) ApplyViewportScissor();
 }
 extern "C" void cne_metal4_app_scissor(int enabled,int x,int y,int w,int h){
 	static int sScLog = 0;
 	if (sScLog < 24) { fprintf(stderr, "[cne-metal4] scissor enabled=%d x=%d y=%d %dx%d target=%d\n", enabled, x, y, w, h, gTarget); ++sScLog; }
 	gScissor=enabled; gScissorRect[0]=x;gScissorRect[1]=y;gScissorRect[2]=w;gScissorRect[3]=h;
-	if(gEncoder){
-		if(enabled){
-			int th = CurrentTargetHeight();
-			int sy = th - (y + h);
-			[gEncoder setScissorRect:(MTLScissorRect){(NSUInteger)x,(NSUInteger)sy,(NSUInteger)w,(NSUInteger)h}];
-		} else {
-			[gEncoder setScissorRect:(MTLScissorRect){0,0,(NSUInteger)gWidth,(NSUInteger)gHeight}];
-		}
-	}
+	if(gEncoder) ApplyViewportScissor();
 }
+extern "C" void cne_metal4_app_tex_filter(int id,int nearest){ gTextureNearest[id] = nearest ? 1 : 0; }
 extern "C" void cne_metal4_app_texture(int id,int w,int h,int isRT,const void* pixels,int format){ EnsureTexture(id,w,h,isRT,pixels,format); }
 extern "C" void cne_metal4_app_buffer(int bufferId,const void* bytes,int size,int isIndex){
 	(void)isIndex;
-	auto it=gBuffers.find(bufferId);
-	if(it==gBuffers.end()||it->second.length<(NSUInteger)size){
-		if (it != gBuffers.end() && it->second != nil) { gTransient.push_back(it->second); gRetiredResources.push_back(it->second); }
+	// [cne-rotate] Write this parity's copy; the GPU reads the other one.  No wait.
+	BufferPair& pair = gBuffers[bufferId];
+	id<MTLBuffer>& buf = pair.b[gFrameParity];
+	if (buf == nil || buf.length < (NSUInteger)size) {
+		if (buf != nil) { gTransient.push_back(buf); gRetiredResources.push_back(buf); }
 		id<MTLBuffer> nb = [gDevice newBufferWithBytes:bytes length:(NSUInteger)size options:MTLResourceStorageModeShared];
-		gBuffers[bufferId] = nb;
+		buf = nb;
 		MarkResident(nb);
 	} else {
-		memcpy(it->second.contents,bytes,(size_t)size);
+		memcpy(buf.contents,bytes,(size_t)size);
 	}
 }
 extern "C" int cne_metal4_app_program(int id,const void* vsData,int vsSize,int vsIsMetallib,const void* fsData,int fsSize,int fsIsMetallib,const int* attribLocations,int attribCount)
@@ -633,6 +1111,7 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 {
 	auto progIt = gPrograms.find(program);
 	if (progIt == gPrograms.end()) return;
+	EnsureEncoder();
 	if (gEncoder == nil) return;
 	static int sDrawLog = 0;
 	if (gVerboseLog || sDrawLog < 48) { fprintf(stderr, "[cne-metal4] draw prog=%d buffers=%d attribs=%d textures=%d tex0=%d idx=%d count=%d target=%d vs=%d fs=%d const=%d blend=%d src=%d dst=%d scissor=%d x=%d y=%d w=%d h=%d\n", program, bufferCount, attribCount, textureCount, textureCount > 0 ? textureIds[0] : -1, indexSize, indexCount, gTarget, vsUniformSize, fsUniformSize, constantCount, blendEnabled, srcRGB, dstRGB, gScissor ? 1 : 0, gScissorRect[0], gScissorRect[1], gScissorRect[2], gScissorRect[3]); ++sDrawLog; }
@@ -640,48 +1119,41 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	if (pso == nil) return;
 	[gEncoder setRenderPipelineState:pso];
 
-	MTL4ArgumentTableDescriptor* atd = [MTL4ArgumentTableDescriptor new];
-	// Buffer slots: 0 = uniform block, 1..bufferCount = vertex streams, and
-	// bufferCount+1 = constant-step attribute block (alpha / colour multipliers).
-	// The descriptor's maxBufferBindCount is an *exclusive* bound, so binding the
-	// constant block at index bufferCount+1 needs bufferCount+2 slots.  The old
-	// value made every constant bind an out-of-range API error, leaving a_color1..3
-	// unbound (alpha = 0 -> fully transparent sprites).
-	atd.maxBufferBindCount = (NSUInteger)(bufferCount + 1 + (constantCount > 0 ? 1 : 0));
-	atd.maxTextureBindCount = (NSUInteger)(textureCount > 0 ? textureCount : 1);
-	atd.maxSamplerStateBindCount = 1;
-	atd.initializeBindings = YES;
-	atd.supportAttributeStrides = YES;
-	id<MTL4ArgumentTable> tableVS = [gDevice newArgumentTableWithDescriptor:atd error:nil];
-	id<MTL4ArgumentTable> tableFS = [gDevice newArgumentTableWithDescriptor:atd error:nil];
-	// Metal 4 does not retain argument tables for in-flight command buffers.
-	gTransient.push_back(tableVS);
-	gTransient.push_back(tableFS);
-	id ubVS = (!gDebugEngine && vsUniformSize > 0) ? [gDevice newBufferWithBytes:vsUniformBytes length:(NSUInteger)vsUniformSize options:MTLResourceStorageModeShared] : nil;
-	id ubFS = fsUniformSize > 0 ? [gDevice newBufferWithBytes:fsUniformBytes length:(NSUInteger)fsUniformSize options:MTLResourceStorageModeShared] : nil;
-	if (ubVS != nil) { gTransient.push_back(ubVS); MarkFrameResident(ubVS); }
-	if (ubFS != nil) { gTransient.push_back(ubFS); MarkFrameResident(ubFS); }
+	// [cne-perf] Argument tables come from the pool and all per-draw payloads are
+	// slices of the frame arena.  Buffer slots: 0 = uniform block, 1..bufferCount =
+	// vertex streams, bufferCount + 1 = constant-step attribute block (alpha /
+	// colour multipliers).  The table bound is the pooled maximum (18), which covers
+	// bufferCount <= 8 plus both extra blocks.
+	id<MTL4ArgumentTable> tableVS = AcquireArgTable (gArgTableVSPool);
+	id<MTL4ArgumentTable> tableFS = AcquireArgTable (gArgTableFSPool);
+	++gArgTableSlot;
+	++gDrawCount;
+	NSUInteger off = 0;
 	if (gDebugEngine) {
 		float vp[4] = {(float)gViewport[2], (float)gViewport[3], 0.0f, 0.0f};
-		id vpBuf = [gDevice newBufferWithBytes:vp length:sizeof(vp) options:MTLResourceStorageModeShared];
-		gTransient.push_back(vpBuf);
-		MarkFrameResident(vpBuf);
-		[tableVS setAddress:[vpBuf gpuAddress] atIndex:0];
-	} else if (ubVS != nil) {
-		[tableVS setAddress:[ubVS gpuAddress] atIndex:0];
+		id vpBuf = ScratchAlloc (sizeof(vp), &off);
+		if (vpBuf != nil) { memcpy((uint8_t*)[vpBuf contents] + off, vp, sizeof(vp)); [tableVS setAddress:([vpBuf gpuAddress] + off) atIndex:0]; }
+	} else if (vsUniformSize > 0) {
+		id ubVS = ScratchAlloc ((NSUInteger)vsUniformSize, &off);
+		if (ubVS != nil) { memcpy((uint8_t*)[ubVS contents] + off, vsUniformBytes, (size_t)vsUniformSize); [tableVS setAddress:([ubVS gpuAddress] + off) atIndex:0]; }
 	}
-	if (ubFS != nil) [tableFS setAddress:[ubFS gpuAddress] atIndex:0];
+	if (fsUniformSize > 0) {
+		id ubFS = ScratchAlloc ((NSUInteger)fsUniformSize, &off);
+		if (ubFS != nil) { memcpy((uint8_t*)[ubFS contents] + off, fsUniformBytes, (size_t)fsUniformSize); [tableFS setAddress:([ubFS gpuAddress] + off) atIndex:0]; }
+	}
 	for (int i = 0; i < bufferCount; ++i) {
 		auto bi = gBuffers.find(bufferIds[i]);
-		if (bi != gBuffers.end()) [tableVS setAddress:[bi->second gpuAddress] attributeStride:(NSUInteger)strides[i] atIndex:(NSUInteger)(i + 1)];
+		if (bi != gBuffers.end() && bi->second.b[gFrameParity] != nil)
+			[tableVS setAddress:[bi->second.b[gFrameParity] gpuAddress] attributeStride:(NSUInteger)strides[i] atIndex:(NSUInteger)(i + 1)];
 	}
 	if (constantCount > 0) {
-		id cb = [gDevice newBufferWithBytes:constantValues length:(NSUInteger)(constantCount * 16) options:MTLResourceStorageModeShared];
-		gTransient.push_back(cb);
-		MarkFrameResident(cb);
-		[tableVS setAddress:[cb gpuAddress] attributeStride:16 atIndex:(NSUInteger)(bufferCount + 1)];
+		auto cbSize = (NSUInteger)(constantCount * 16);
+		id cb = ScratchAlloc (cbSize, &off);
+		if (cb != nil) { memcpy((uint8_t*)[cb contents] + off, constantValues, (size_t)cbSize); [tableVS setAddress:([cb gpuAddress] + off) attributeStride:16 atIndex:(NSUInteger)(bufferCount + 1)]; }
 	}
-	if (gSampler != nil) [tableFS setSamplerState:[gSampler gpuResourceID] atIndex:0];
+	id<MTLSamplerState> samp = (textureCount > 0 && gTextureNearest[textureIds[0]]) ? gSamplerNearest : gSamplerLinear;
+	{ static int sNearestLog = 0; if (sNearestLog < 40) { fprintf(stderr, "[cne-pixel] draw tex=%d nearest=%d flag=%d n=%d\n", textureCount>0?textureIds[0]:-1, samp==gSamplerNearest?1:0, textureCount>0?gTextureNearest[textureIds[0]]:0, textureCount); ++sNearestLog; } }
+	if (samp != nil) [tableFS setSamplerState:[samp gpuResourceID] atIndex:0];
 	for (int i = 0; i < textureCount && i < 16; ++i) {
 		auto ti = gTextures.find(textureIds[i]);
 		if (ti != gTextures.end()) [tableFS setTexture:(MTLResourceID)[ti->second gpuResourceID] atIndex:(NSUInteger)i];
@@ -696,11 +1168,12 @@ extern "C" void cne_metal4_app_draw(int program,int blendEnabled,int srcRGB,int 
 	else if (primitive == 4) pt = MTLPrimitiveTypeLineStrip;
 	else if (primitive == 6) pt = MTLPrimitiveTypePoint;
 	if (indexBytes != nullptr && indexSize > 0) {
-		id ib = [gDevice newBufferWithBytes:indexBytes length:(NSUInteger)indexSize options:MTLResourceStorageModeShared];
-		// Non-retaining command buffer: the index buffer must outlive encoding.
-		gTransient.push_back(ib);
-		MarkFrameResident(ib);
-		[gEncoder drawIndexedPrimitives:pt indexCount:(NSUInteger)indexCount indexType:(indexType == 0 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32) indexBuffer:[ib gpuAddress] indexBufferLength:(NSUInteger)indexSize instanceCount:1 baseVertex:(NSInteger)baseVertex baseInstance:0];
+		id ib = ScratchAlloc ((NSUInteger)indexSize, &off);
+		if (ib != nil)
+		{
+			memcpy((uint8_t*)[ib contents] + off, indexBytes, (size_t)indexSize);
+			[gEncoder drawIndexedPrimitives:pt indexCount:(NSUInteger)indexCount indexType:(indexType == 0 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32) indexBuffer:([ib gpuAddress] + off) indexBufferLength:(NSUInteger)indexSize instanceCount:1 baseVertex:(NSInteger)baseVertex baseInstance:0];
+		}
 	} else {
 		[gEncoder drawPrimitives:pt vertexStart:0 vertexCount:(NSUInteger)vertexCount instanceCount:1];
 	}
@@ -716,6 +1189,11 @@ extern "C" int cne_metal4_app_read_texture(int id, void* out, int width, int hei
 }
 
 extern "C" void cne_metal4_app_shutdown(void){
+	// [cne-perf] Release the frame arena and the pooled argument tables too.
+	for (int i = 0; i < 2; ++i) { gArenas[i].buf = nil; gArenas[i].cap = 0; gArenas[i].used = 0; }
+	gParityEvent[0] = gParityEvent[1] = 0;
+	gTransientPrev.clear(); gRetiredPrev.clear();
+	gArgTableVSPool.clear(); gArgTableFSPool.clear(); gArgTableSlot = 0;
 	gEncoder=nil; gPass=nil; gCommandBuffer=nil; gAllocator=nil;
 	if (gResidentPersist != nil) [gResidentPersist removeAllAllocations];
 	if (gResidentFrame != nil) [gResidentFrame removeAllAllocations];

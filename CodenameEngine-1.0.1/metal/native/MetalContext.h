@@ -37,6 +37,9 @@ namespace metal {
 	void ApplyFrameViewOrder ();
 	// [cne-filterdump] CNE_METAL_DUMP_FILTER=<dir>: writes one frame's RT passes after present.
 	void DumpFilterPassesAfterFrame ();
+	// [cne-native-screen] defer screen draws to frame end (screen-last ordering).
+	void DeferScreenClear (float r, float g, float b, float a);
+	void FlushPendingScreenDraws ();
 
 	extern uint32_t gDrawArrays;
 	// [cne-hitch] resource-creation counters (see Frame())

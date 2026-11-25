@@ -14,6 +14,7 @@
 
 #include "../opengl/OpenGLBindings.h"
 #include "MetalContext.h"
+#include <unistd.h>
 
 #include <bgfx/bgfx.h>
 
@@ -398,6 +399,20 @@ namespace lime {
 			bgfx::TextureHandle handle = BGFX_INVALID_HANDLE;
 			bool hasData = false;
 			bool isRenderTarget = false;   // this texture is used as a render-target attachment
+			// [cne-texdirty] True once a framebuffer owning this texture has actually been
+			// bound for rendering.  A texture can be attached to an FBO purely as an
+			// optimization (OpenFL's `createRectangleTexture(..., true)`, used by hxvlc for
+			// video), while its pixels are still uploaded from the CPU every frame.  Such a
+			// texture must not be mistaken for a GPU-only render target, or its uploads are
+			// skipped and the video stays black.
+			bool gpuDrawn = false;
+			// [cne-texdirty] True while the texture's content comes from CPU uploads
+			// (hxvlc video, animated textures).  A camera canvas is allocated with
+			// glTexImage2D(..., null), so cpuStreaming stays false and the texture is
+			// treated as GPU-owned even on frames where its FBO was not bound yet.
+			// The old `hasData` heuristic could re-upload an empty CPU mirror over a
+			// freshly rendered camera and make the layer flicker/flip.
+			bool cpuStreaming = false;
 			// True when the live bgfx handle was created with BGFX_TEXTURE_RT.  Data textures are
 			// created without the RT flag so their per-frame uploads can use updateTexture2D;
 			// they are re-created as RT exactly once if glFramebufferTexture2D attaches them.
@@ -8088,13 +8103,28 @@ namespace lime {
 		if (target != GL_FRAMEBUFFER) return;
 		MetalContext::state.currentFramebuffer = framebuffer;
 
+		// [cne-texdirty] Mark the attachment as GPU-backed the moment its framebuffer is
+		// actually bound.  Textures that merely own an unused FBO (hxvlc video) keep
+		// gpuDrawn=false and continue to be uploaded from their CPU mirror.
+		if (framebuffer != 0)
+		{
+			auto boundFb = framebuffers.find (framebuffer);
+			if (boundFb != framebuffers.end () && boundFb->second.texture >= 0)
+			{
+				auto boundTex = textures.find (boundFb->second.texture);
+				if (boundTex != textures.end ()) { boundTex->second.gpuDrawn = true; boundTex->second.cpuStreaming = false; }
+			}
+		}
+
 		if (cne_metal4_app_active ())
 		{
 			if (framebuffer == 0)
 			{
-				cne_metal4_app_target (-1, (int)MetalContext::state.backbufferWidth, (int)MetalContext::state.backbufferHeight, 1,
-					MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
-					MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
+				// Screen-last: remember the clear and defer the actual screen pass to
+				// frame end (MetalNative.inc: FlushPendingScreenDraws), after every
+				// offscreen filter pass has been encoded.  Default is transparent;
+				// the engine's explicit glClear (cne_metal_clear) updates it.
+				metal::DeferScreenClear (0.f, 0.f, 0.f, 0.f);
 			}
 			else
 			{
@@ -8104,9 +8134,13 @@ namespace lime {
 					auto tx = textures.find (fb->second.texture);
 					int tw = tx != textures.end () ? tx->second.width : (int)MetalContext::state.backbufferWidth;
 					int th = tx != textures.end () ? tx->second.height : (int)MetalContext::state.backbufferHeight;
-					cne_metal4_app_target (fb->second.texture, tw, th, 0,
-						MetalContext::state.clearColor[0], MetalContext::state.clearColor[1],
-						MetalContext::state.clearColor[2], MetalContext::state.clearColor[3], 1);
+					// bgfx's ConfigureView clears every FBO view to transparent black
+					// (CNE_METAL_RT_TRANSPARENT_CLEAR defaults on).  Match it here: the
+					// engine draws camera canvases with deliberate transparent holes
+					// (Freeplay's TV window) over a lower camera layer, and a stale
+					// glClearColor turned that hole opaque black.  An explicit non-
+					// transparent glClear still arrives through cne_metal_clear.
+					cne_metal4_app_target (fb->second.texture, tw, th, 0, 0.f, 0.f, 0.f, 0.f, 1);
 				}
 			}
 		}
