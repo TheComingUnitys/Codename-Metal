@@ -1,106 +1,136 @@
 name: Bug 报告 / Bug report
-description: 渲染错误、崩溃、画面异常、性能问题等。请务必填写渲染路径与模组信息。
+description: 渲染错误、崩溃、画面异常、性能问题等。请填写渲染路径与模组信息。 / Rendering bugs, crashes, visual glitches, performance. Please fill in the render path and mod info.
 title: "[Bug] "
 body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈。填得越全，越容易定位问题。
+        **中文** — 感谢反馈，填得越全越容易定位。请先确认：
 
-        **请先确认：**
-        - 使用的是**最新 release**（当前为 `v1.0.1-metal.6`）
-        - 已经试过**不装任何模组**启动一次，确认问题是否仍然存在
+        - 使用的是**最新 release**（当前 `v1.0.1-metal.6`）
+        - 已经**不装任何模组**启动过一次，确认问题是否仍然存在
+
+        **English** — Thanks for the report; the more detail, the faster this gets
+        fixed. Please confirm first:
+
+        - you are on the **latest release** (currently `v1.0.1-metal.6`)
+        - the problem still happens when you launch with **no mods installed**
 
   - type: dropdown
     id: renderer
     attributes:
-      label: 1. 运行时使用的渲染路径
+      label: 1. 渲染路径 / Render path
       description: |
-        普通启动时日志里会有一行（Windows 以外的终端 / `Console.app`）：
-
-        - `[cne-metal4] native renderer enabled (Metal 4 available)` → **Metal 4**
-        - `[cne-metal4] native renderer skipped, using bgfx Metal 2 path` → **bgfx**
-
+        中文：普通启动时日志里会有一行 ——
+        `[cne-metal4] native renderer enabled (Metal 4 available)` 表示 **Metal 4**；
+        `[cne-metal4] native renderer skipped, using bgfx Metal 2 path` 表示 **bgfx**。
         也可以用 `CNE_METAL4_PERF=1` 启动，看 `[cne-fps] native` 或 `[cne-fps] bgfx`。
-        如果找不到日志，选「不确定」并把 `macOS 版本` 写在第 6 项里。
+        找不到日志请选「不确定」，并在第 6 项写上 macOS 版本。
+
+        English: the startup log prints one of —
+        `[cne-metal4] native renderer enabled (Metal 4 available)` for **Metal 4**, or
+        `[cne-metal4] native renderer skipped, using bgfx Metal 2 path` for **bgfx**.
+        Launching with `CNE_METAL4_PERF=1` also prints `[cne-fps] native` / `[cne-fps] bgfx`.
+        If you cannot find the log, pick "not sure" and add your macOS version in field 6.
       options:
         - Metal 4（原生渲染器 / native renderer）
         - bgfx（Metal 2）
-        - 不确定 / 找不到日志
+        - 不确定 / 找不到日志 (not sure / no log)
     validations:
       required: true
 
   - type: dropdown
     id: mods
     attributes:
-      label: 2. 是否安装了模组
-      description: 检查 `CodenameEngine.app/Contents/Resources/mods/` 下，除官方内容外是否有第三方模组。
+      label: 2. 是否安装了模组 / Are any mods installed?
+      description: |
+        中文：检查 `CodenameEngine.app/Contents/Resources/mods/` 下，除官方内容外是否有第三方模组。
+
+        English: check `CodenameEngine.app/Contents/Resources/mods/` for any
+        third-party mod folders besides the official content.
       options:
-        - 否，没有任何模组
-        - 是，装了模组
-        - 不确定
+        - 否，没有任何模组 / No mods
+        - 是，装了模组 / Yes, mods installed
+        - 不确定 / Not sure
     validations:
       required: true
 
   - type: textarea
     id: mod_details
     attributes:
-      label: 3. 模组名称、版本与下载地址
-      description: 第 2 项选「否」可跳过。**装了多个模组请逐个列出**，并说明是否已用「只留一个模组」的方式排除过。
+      label: 3. 模组名称、版本与下载地址 / Mod name, version and download URL
+      description: |
+        中文：第 2 项选「否」可跳过。装了多个模组请逐个列出，并说明是否已用「只留一个模组」的方式排除过。
+
+        English: skip this if field 2 is "No mods". List every mod separately and
+        mention whether you already tried with only one mod installed.
       placeholder: |
-        1) 模组名称：
-           版本：
-           下载地址：
-        2) 模组名称：
-           版本：
-           下载地址：
+        1) 名称 / name:
+           版本 / version:
+           下载地址 / download URL:
+        2) 名称 / name:
+           版本 / version:
+           下载地址 / download URL:
     validations:
       required: false
 
   - type: textarea
     id: problem
     attributes:
-      label: 4. 问题描述与复现方法
-      description: 说明预期结果与实际结果，并给出能稳定复现的步骤（越具体越好，例如"进入 Freeplay → 选中第 3 首 → 按 Enter"）。
+      label: 4. 问题描述与复现方法 / What happens and how to reproduce
+      description: |
+        中文：说明预期与实际结果，并给出能稳定复现的步骤（越具体越好，例如「进入 Freeplay → 选中第 3 首 → 按 Enter」）。
+
+        English: describe the expected vs. actual result and the exact steps that
+        reproduce it (e.g. "open Freeplay → select the 3rd song → press Enter").
       placeholder: |
-        ## 现象
-        （看到了什么，例如：角色变成白色方块 / 画面上下颠倒 / 进关后黑屏）
+        ## 现象 / What happens
+        （例如：角色变成白色方块 / 画面上下颠倒 / 进关后黑屏）
+        (e.g. character turns into a white square / picture is upside down / black screen after entering a song)
 
-        ## 预期
-        （应该是什么样）
+        ## 预期 / Expected
 
-        ## 复现步骤
+        ## 复现步骤 / Steps to reproduce
         1.
         2.
         3.
 
-        ## 出现频率
+        ## 出现频率 / Frequency
         （每次必现 / 偶尔 / 只在某个 state 出现）
+        (always / sometimes / only in a certain state)
 
-        ## 日志（如有）
-        （把终端输出或 Console.app 里的相关行贴进来，尤其是 `[cne-metal4]` / `[cne-metal]` 开头的）
+        ## 日志 / Log
+        （终端或 Console.app 里 `[cne-metal4]`、`[cne-metal]` 开头的行）
+        (lines starting with `[cne-metal4]` / `[cne-metal]` from the terminal or Console.app)
     validations:
       required: true
 
   - type: textarea
     id: video
     attributes:
-      label: 5. 复现视频 / 截图
-      description: 直接把录屏或截图**拖进这个输入框**（会自动上传），或贴 Bilibili / YouTube / Streamable 等链接。
-      placeholder: 拖入视频文件，或粘贴链接
+      label: 5. 复现视频 / 截图 · Video / screenshots
+      description: |
+        中文：直接把录屏或截图**拖进这个输入框**（会自动上传），或贴 Bilibili / YouTube / Streamable 等链接。
+
+        English: drag the recording or screenshots **into this box** (they upload
+        automatically), or paste a Bilibili / YouTube / Streamable link.
+      placeholder: 拖入视频文件，或粘贴链接 / drop a video file here, or paste a link
     validations:
       required: false
 
   - type: textarea
     id: environment
     attributes:
-      label: 6. 运行环境（可选但强烈建议）
-      description: 这些信息对判断"为什么走了这条路"很关键。
+      label: 6. 运行环境（可选但强烈建议）/ Environment (optional, strongly recommended)
+      description: |
+        中文：这些信息决定"为什么走了这条渲染路径"，对定位很关键。
+
+        English: this decides *why* the game picked that render path, so it matters.
       placeholder: |
-        macOS 版本：（例如 26.1）
-        芯片：（例如 Apple M3 / Intel i7-9750H）
-        引擎版本 / release 标签：（例如 v1.0.1-metal.6）
-        是否全屏 / 窗口大小：
-        是否 Resize 过窗口：
+        macOS 版本 / version:（例如 26.1）
+        芯片 / chip:（例如 Apple M3 / Intel i7-9750H）
+        引擎版本 / release tag:（例如 v1.0.1-metal.6）
+        全屏还是窗口 / fullscreen or window:
+        是否 resize 过窗口 / window resized during play:
     validations:
       required: false
