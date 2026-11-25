@@ -164,9 +164,12 @@ else
 	say "pass 1/3: arm64"
 	restore_lime
 	run "rm -rf '$LIME_DIR/project/obj'"
-	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal )"
+	# lime's include.xml defaults MACOSX_DEPLOYMENT_TARGET to 10.9, which the bundled
+	# OpenAL Soft refuses (it needs the 10.13 aligned-allocation entry points).  Every
+	# pass pins the same target the release is built and tested with.
+	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal -DMACOSX_DEPLOYMENT_TARGET=11.0 )"
 	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$NDLL" ] || die "arm64 rebuild produced no $NDLL"
-	run "( cd '$PROJECT_DIR' && haxelib run lime build mac )"
+	run "( cd '$PROJECT_DIR' && haxelib run lime build mac -DMACOSX_DEPLOYMENT_TARGET=11.0 )"
 	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$BIN" ] || die "lime build produced no $BIN"
 	run "cp '$NDLL' '$ARM_NDLL'"
 	run "cp '$BIN' '$ARM_BIN'"
@@ -179,11 +182,11 @@ else
 	say "pass 2/3: x86_64"
 	run "rm -rf '$LIME_DIR/project/obj'"
 	run "sed -i '' 's|\\.build/osx-arm64/bin|.build/osx-x64/bin|g' '$BUILD_XML'"
-	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal -DCNE_X64 )"
+	run "( cd '$LIME_DIR' && haxelib run lime rebuild mac -Dmetal -DCNE_X64 -DMACOSX_DEPLOYMENT_TARGET=11.0 )"
 	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$NDLL" ] || die "Intel rebuild produced no $NDLL"
 	run "cp '$NDLL' '$X64_NDLL'"
-	run "( cd '$PROJECT_DIR' && haxe export/release/macos/haxe/release.hxml -D HXCPP_CLANG -D HXCPP_M64 )"
-	run "( cd '$PROJECT_DIR/export/release/macos/obj' && haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64 )"
+	run "( cd '$PROJECT_DIR' && haxe export/release/macos/haxe/release.hxml -D HXCPP_CLANG -D HXCPP_M64 -D MACOSX_DEPLOYMENT_TARGET=11.0 )"
+	run "( cd '$PROJECT_DIR/export/release/macos/obj' && haxelib run hxcpp Build.xml -DHXCPP_CLANG -DHXCPP_M64 -DMACOSX_DEPLOYMENT_TARGET=11.0 )"
 	[ "${DRY_RUN:-0}" = "1" ] || [ -f "$PROJECT_DIR/export/release/macos/obj/ApplicationMain" ] || die "Intel hxcpp link produced no ApplicationMain"
 	run "cp '$PROJECT_DIR/export/release/macos/obj/ApplicationMain' '$X64_BIN'"
 	restore_lime
