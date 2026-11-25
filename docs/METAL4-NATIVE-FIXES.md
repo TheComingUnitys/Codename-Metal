@@ -396,3 +396,26 @@ still guards the single-buffered uploads, so the write-race protection is intact
 
 Result: A/B in the same run, same scene - wait on: 34-56 fps; wait off: normal
 60 fps, no corruption.
+
+## 2026-11-25: renderer is chosen at runtime, not by an environment variable
+
+The native renderer used to require `CNE_METAL4_NATIVE=1`; without it the shipped
+build always ran bgfx, so the new path was effectively opt-in forever.
+
+Startup now asks the GPU (`cne_metal4_device_available()`): the native Metal 4
+renderer is used when the process runs on macOS 26+ **and** the default device
+answers `supportsFamily:MTLGPUFamilyMetal4`; every other machine stays on bgfx's
+Metal 2 backend, which bgfx selects itself from `MTLDevice`.  A failed native
+init also falls back to bgfx, so a driver regression cannot black-screen the game.
+
+```text
+[cne-metal4] native renderer enabled (Metal 4 available)     <- macOS 26 + Metal 4 GPU
+[cne-metal4] native renderer skipped, using bgfx Metal 2 path <- everything else
+```
+
+`CNE_METAL4_NATIVE=0` / `=1` still forces one path for A/B testing.
+
+The same release moves to bgfx API v172 (`3fe177f`, bx `b8ee10a`, bimg `38ceda5`)
+and ships as a universal (arm64 + x86_64) app: the Intel slice is built by
+invoking haxe/hxcpp with `HXCPP_M64` and lipo'd with the arm64 slice, and bgfx is
+built for both `osx-arm64` and `osx-x64`.
